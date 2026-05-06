@@ -100,10 +100,67 @@ From a local path:
 memex install-from-path /path/to/my-skill/
 ```
 
-From a remote git URL (v0.2):
+From a remote git URL (v0.2 registry, planned):
 
 ```bash
 memex install skill:org/my-skill@v1
+```
+
+## Repo bootstrap (v0.2)
+
+Drop knowledge files into a repo and `memex bootstrap` auto-installs them.
+
+### Directory bundles
+
+```
+your-repo/
+├── .memex/
+│   └── skills/
+│       ├── team-philosophy/
+│       │   ├── manifest.json
+│       │   └── concepts.jsonl
+│       └── devops-guidelines/
+│           ├── manifest.json
+│           └── concepts.jsonl
+└── ...
+```
+
+### Single-file skills
+
+Anywhere under the repo root, a file ending in `.memex.json` or `.memex.jsonl` is loaded as a skill. The filename's stem (minus `.memex`) becomes the skill name.
+
+```bash
+your-repo/
+├── docs/
+│   └── decisions.memex.jsonl     # one Concept per line
+└── conventions.memex.json        # JSON list or {name, version, concepts}
+```
+
+### Run bootstrap
+
+```bash
+# Scan current directory
+memex bootstrap
+
+# Scan a specific path
+memex bootstrap /path/to/repo
+
+# Auto-bootstrap when daemon starts
+export MEMEX_AUTO_BOOTSTRAP=true
+export MEMEX_BOOTSTRAP_ROOT=/path/to/repo   # optional, defaults to cwd
+memex daemon
+```
+
+Bootstrap is **idempotent**: re-running it skips already-installed skills (deduped by `metadata.skill` provenance), so it's safe to run on every daemon start.
+
+### Use case: repo-as-skill-source
+
+Each repo can carry its own philosophy, devops guidelines, and decisions as `.memex.jsonl` files committed alongside the code. When memex points at the repo (or runs as a daemon there), the AI immediately sees the team's conventions.
+
+```jsonl
+{"name": "deploy-on-friday-rule", "kind": "constraint", "description": "Never deploy to prod on a Friday after 3pm — too thin on-call coverage."}
+{"name": "decimal-for-money", "kind": "pattern", "description": "All money is decimal.Decimal with ROUND_HALF_EVEN."}
+{"name": "auth-via-reach", "kind": "decision", "description": "We chose Reach over WireGuard for the auth tunnel — simpler ops, gRPC reuse."}
 ```
 
 ## Roadmap

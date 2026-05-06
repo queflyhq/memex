@@ -253,6 +253,33 @@ def install_from_local_path(
     console.print(f"[green]installed[/green] skill from {path}: {counts}")
 
 
+@app.command()
+def bootstrap(
+    path: Annotated[Path, typer.Argument(help="Repo or directory root to scan.")] = Path("."),
+) -> None:
+    """Auto-discover and install skill bundles from a repo's .memex/skills/ + *.memex.{json,jsonl}."""
+    from memex.skills import bootstrap as do_bootstrap
+
+    eng = _engine()
+    result = do_bootstrap(eng, path)
+    if not result.skills_installed and not result.skills_skipped:
+        console.print(f"[dim]no skill bundles found under {path.resolve()}[/dim]")
+        return
+    if result.skills_installed:
+        console.print(
+            f"[green]installed[/green] {len(result.skills_installed)} skill(s) "
+            f"({result.concepts_added} concepts):"
+        )
+        for name in result.skills_installed:
+            console.print(f"  [bold]{name}[/bold]")
+    if result.skills_skipped:
+        console.print(
+            f"[dim]skipped {len(result.skills_skipped)} already-installed skill(s):[/dim]"
+        )
+        for name in result.skills_skipped:
+            console.print(f"  [dim]{name}[/dim]")
+
+
 # ---- list / stats / doctor ---------------------------------------------
 
 
@@ -329,10 +356,30 @@ def _is_writable(path: Path) -> bool:
 # ---- frontends ---------------------------------------------------------
 
 
+def _maybe_auto_bootstrap() -> None:
+    """If MEMEX_AUTO_BOOTSTRAP=true, scan cwd for .memex/skills + *.memex.{json,jsonl}."""
+    settings = get_settings()
+    if not settings.auto_bootstrap:
+        return
+    try:
+        from memex.skills import bootstrap as do_bootstrap
+
+        eng = _engine()
+        result = do_bootstrap(eng, settings.bootstrap_root)
+        if result.skills_installed:
+            err_console.print(
+                f"[dim]auto-bootstrap: installed {len(result.skills_installed)} skill(s) "
+                f"({result.concepts_added} concepts) from {settings.bootstrap_root}[/dim]"
+            )
+    except Exception as e:
+        err_console.print(f"[yellow]auto-bootstrap failed: {e}[/yellow]")
+
+
 @app.command()
 def serve() -> None:
     """Run the MCP stdio server (for AI editors that pipe stdio)."""
     _setup_logging()
+    _maybe_auto_bootstrap()
     from memex.frontends.mcp.server import run_stdio
 
     run_stdio()
@@ -353,6 +400,8 @@ def daemon(
     if not port_s:
         err_console.print(f"[red]invalid --listen value `{bind}`[/red] — expected HOST:PORT")
         raise typer.Exit(code=2)
+
+    _maybe_auto_bootstrap()
 
     from memex.frontends.http.server import InsecureBindingError, run_http
 

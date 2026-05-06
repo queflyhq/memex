@@ -26,7 +26,9 @@ class Settings(BaseSettings):
     embed_dim: int = 384
 
     daemon_url: str | None = None
-    pack_registry: str = "https://github.com/queflyhq/memex-packs"
+    pack_registry: str = "https://github.com/queflyhq/memex-skills"
+    auto_bootstrap: bool = False
+    bootstrap_root: Path = Field(default_factory=Path.cwd)
 
     @property
     def graph_path(self) -> Path:

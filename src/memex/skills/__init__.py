@@ -1,3 +1,4 @@
+from memex.skills.bootstrap import BootstrapResult, bootstrap, discover_bundles, discover_files
 from memex.skills.loader import (
     Skill,
     find_builtin_skill,
@@ -7,7 +8,11 @@ from memex.skills.loader import (
 )
 
 __all__ = [
+    "BootstrapResult",
     "Skill",
+    "bootstrap",
+    "discover_bundles",
+    "discover_files",
     "find_builtin_skill",
     "install_from_path",
     "install_skill",
