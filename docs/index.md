@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="../assets/logo-bird.svg" alt="Quefly" width="120" height="120" />
+</p>
+
 # memex
 
 **Persistent cognitive memory for AI coding tools.**
