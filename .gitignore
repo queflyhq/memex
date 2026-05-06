@@ -1,0 +1,72 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual envs
+.venv/
+venv/
+env/
+ENV/
+
+# uv
+.uv/
+uv.lock
+
+# Tooling
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+.cache
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Memex runtime data (only relevant inside example dirs)
+.memex/
+*.kuzu/
+graph.kuzu*
+vectors.db*
+episodic.db*
+
+# Models cache (when downloaded for local dev)
+models/
+.fastembed_cache/
+
+# Env
+.env
+.env.local
+.env.*.local
+
+# OS
+Thumbs.db
+desktop.ini

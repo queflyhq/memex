@@ -1,0 +1,9 @@
+{
+  "name": "core-validations",
+  "version": "0.1.0",
+  "description": "Globally-applicable engineering principles every AI coding tool should self-attest against before generating code. Language-agnostic — applies to Python, Go, TypeScript, Java, Rust, Ruby, and any stack. Each entry has an `approach` (how to think) and `checks` (what must be true).",
+  "license": "MIT",
+  "homepage": "https://github.com/queflyhq/memex",
+  "min_memex": "0.1.0",
+  "scope": "global:engineering-principles"
+}

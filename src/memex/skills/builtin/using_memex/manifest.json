@@ -1,0 +1,9 @@
+{
+  "name": "using-memex",
+  "version": "0.1.0",
+  "description": "The bootstrap meta-skill. Teaches any AI tool how to interact with memex: when to recall, when to validate, when to observe, when to add. Every memex install ships with this skill auto-loaded so an AI's first `recall(\"how to use memex\")` returns the protocol.",
+  "license": "MIT",
+  "homepage": "https://github.com/queflyhq/memex",
+  "min_memex": "0.1.0",
+  "scope": "global:memex-protocol"
+}

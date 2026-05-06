@@ -1,0 +1,9 @@
+{
+  "name": "python-stdlib",
+  "version": "0.1.0",
+  "description": "Python standard-library gotchas, idioms, and version-specific guidance. Language-specific bundle covering datetime, asyncio, subprocess, logging, and friends.",
+  "license": "MIT",
+  "homepage": "https://github.com/queflyhq/memex",
+  "min_memex": "0.1.0",
+  "scope": "language:python"
+}
