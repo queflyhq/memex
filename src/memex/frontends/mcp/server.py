@@ -357,14 +357,11 @@ class MCPServer:
                     ),
                 }
 
-            payload = result.to_dict()
-            # Slice A always reports degraded:true because vector ranking
-            # isn't yet wired into recall_code (see slice A.1).
-            payload["degraded"] = True
-            payload["degraded_reason"] = (
-                "slice A: name-anchored only; vector similarity ranking lands in slice A.1"
-            )
-            return payload
+            # Result already carries `degraded` + `degraded_reason` set by
+            # recall_code itself when the embedding provider is unavailable
+            # or vectors are empty. No override here — the no-silent-fallback
+            # rule means whatever recall_code reports is what we forward.
+            return result.to_dict()
 
         @mcp.tool()
         def add_code_source(

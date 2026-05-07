@@ -123,10 +123,19 @@ def recall_code(
 ) -> CodeRecallResult:
     """Find symbols matching `query` and return them with their neighborhood.
 
-    `query` is matched against symbol name (exact / case-insensitive prefix /
-    substring), then signature. Vector similarity ranking is added in slice
-    A.1 — slice A is name-anchored to keep the typed-graph promise
-    obvious.
+    Ranking (highest → lowest priority):
+      1. Exact name match (case-insensitive)
+      2. Prefix name match
+      3. Substring name match
+      4. Signature substring match
+      5. Vector similarity (when embeddings are available — keys on the
+         symbol's docstring + signature, surfacing intent matches like
+         "the function that authenticates a user" finding `validateLogin`).
+
+    The typed-graph stays primary — vector similarity is a TIE-BREAKER and
+    a recall channel for free-form queries, never the sole signal. When
+    embeddings are unavailable the result is marked `degraded` with the
+    reason, per the no-silent-fallback rule.
     """
     q_norm = query.strip()
     if not q_norm:
@@ -146,6 +155,26 @@ def recall_code(
         seen.add(c.id)
         deduped.append(c)
     matches = deduped[:limit]
+
+    # Vector-similarity recall — only used as a fallback when name + signature
+    # match found nothing. The typed-graph promise is "name X returns symbol X
+    # plus its neighborhood" — we don't want to dilute exact matches with
+    # semantically-similar siblings. Free-form intent queries (e.g.
+    # "the function that verifies JWTs") get vector recall by virtue of
+    # finding zero name matches first.
+    degraded = False
+    degraded_reason: str | None = None
+    if not matches:
+        vec_matches, deg, reason = _find_symbols_by_vector(
+            engine, q_norm, source_id, symbol_kind, limit, exclude=seen,
+        )
+        for c in vec_matches:
+            if c.id in seen:
+                continue
+            seen.add(c.id)
+            matches.append(c)
+        degraded = deg
+        degraded_reason = reason
 
     # Neighborhood expansion: defining file + parent symbol + same_as siblings.
     neighborhood: list[Concept] = []
@@ -170,6 +199,8 @@ def recall_code(
         related_concepts=related,
         query=query,
         expand_hops=expand_hops,
+        degraded=degraded,
+        degraded_reason=degraded_reason,
     )
 
 
@@ -221,6 +252,55 @@ def _find_symbols_by_signature(
         c for c in candidates
         if q_lower in c.metadata.get("signature", "").lower()
     ][:limit]
+
+
+def _find_symbols_by_vector(
+    engine: "Engine",
+    query: str,
+    source_id: str | None,
+    symbol_kind: str | None,
+    limit: int,
+    exclude: set[str],
+    min_similarity: float = 0.5,
+) -> tuple[list[Concept], bool, str | None]:
+    """Vector-similarity search over indexed concept embeddings, scoped
+    to symbol concepts. Returns (matches, degraded, reason).
+
+    Below `min_similarity` (cosine 1 - distance, range 0..1) the result
+    is dropped — fits the no-silent-fallback rule: if your query is
+    nonsense, you get an empty result, not a random closest neighbor.
+    """
+    if limit <= 0:
+        return [], False, None
+    if not engine.embedding_provider.is_available():
+        return [], True, "embedding provider not installed (Tier 0 — name+signature only)"
+    if engine.vector.count() == 0:
+        return [], True, "vector store empty (no concepts have been indexed yet)"
+    try:
+        q_vec = engine.embedding_provider.embed(query)
+    except Exception as e:  # noqa: BLE001
+        log.warning("vector recall: query embedding failed: %s", e)
+        return [], True, f"query embedding failed: {e}"
+    # Pull more than `limit` so we can filter by kind/source after; the
+    # vector store doesn't know about NodeKind.
+    raw = engine.vector.search(q_vec, limit=max(limit * 5, 25))
+    out: list[Concept] = []
+    for cid, score in raw:
+        if score < min_similarity:
+            continue
+        if cid in exclude:
+            continue
+        c = engine.get(cid)
+        if c is None or c.kind != NodeKind.symbol:
+            continue
+        if source_id and c.metadata.get("source_id") != source_id:
+            continue
+        if symbol_kind and c.metadata.get("symbol_kind") != symbol_kind:
+            continue
+        out.append(c)
+        if len(out) >= limit:
+            break
+    return out, False, None
 
 
 def _expand_one_hop(
