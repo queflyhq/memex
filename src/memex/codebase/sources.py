@@ -27,6 +27,84 @@ def _slugify(name: str) -> str:
     return f"{base}-{digest}"
 
 
+def _detect_git_info(repo_path: Path) -> dict[str, str]:
+    """Best-effort: capture git remote URL, host, current branch, and HEAD
+    commit. Pure file reads — no subprocess. Returns {} for non-git dirs.
+    Stores a snapshot at index time so reindex can flag drift later.
+    """
+    git_dir = repo_path / ".git"
+    if not git_dir.is_dir():
+        return {}
+    info: dict[str, str] = {}
+    # remote URL
+    cfg = git_dir / "config"
+    if cfg.is_file():
+        try:
+            text = cfg.read_text(encoding="utf-8", errors="replace")
+            in_origin = False
+            for line in text.splitlines():
+                s = line.strip()
+                if s.startswith("[remote "):
+                    in_origin = '"origin"' in s
+                    continue
+                if s.startswith("["):
+                    in_origin = False
+                    continue
+                if in_origin and s.startswith("url ="):
+                    info["url"] = s.split("=", 1)[1].strip()
+                    break
+        except Exception:  # noqa: BLE001
+            pass
+    if "url" in info:
+        url = info["url"]
+        if "github.com" in url:
+            info["host"] = "github"
+        elif "gitlab.com" in url or "gitlab" in url:
+            info["host"] = "gitlab"
+        elif "bitbucket" in url:
+            info["host"] = "bitbucket"
+        elif "azure.com" in url or "dev.azure" in url:
+            info["host"] = "azure"
+        else:
+            info["host"] = ""
+    # current branch + HEAD commit
+    head = git_dir / "HEAD"
+    if head.is_file():
+        try:
+            ref = head.read_text(encoding="utf-8", errors="replace").strip()
+            if ref.startswith("ref:"):
+                ref_path = ref[4:].strip()  # e.g. "refs/heads/main"
+                info["branch"] = ref_path.rsplit("/", 1)[-1]
+                ref_file = git_dir / ref_path
+                if ref_file.is_file():
+                    info["commit"] = ref_file.read_text(
+                        encoding="utf-8", errors="replace"
+                    ).strip()
+                else:
+                    # Try packed-refs
+                    packed = git_dir / "packed-refs"
+                    if packed.is_file():
+                        for line in packed.read_text(
+                            encoding="utf-8", errors="replace"
+                        ).splitlines():
+                            if line.endswith(" " + ref_path):
+                                info["commit"] = line.split(" ", 1)[0]
+                                break
+            else:
+                # Detached HEAD — ref IS the sha
+                info["commit"] = ref
+                info["branch"] = "(detached)"
+        except Exception:  # noqa: BLE001
+            pass
+    return info
+
+
+# Backwards-compat shim — old tests / callers.
+def _detect_git_remote(repo_path: Path) -> dict[str, str]:
+    info = _detect_git_info(repo_path)
+    return {"url": info.get("url", ""), "host": info.get("host", "")} if info else {}
+
+
 def add_source(
     engine: "Engine",
     path: str | Path,
@@ -41,12 +119,17 @@ def add_source(
         return existing
 
     display_name = name or _slugify(abs_path)
+    git = _detect_git_info(Path(abs_path))
     metadata = {
         "path": abs_path,
         "slug": _slugify(abs_path),
         "indexed_files": 0,
         "indexed_symbols": 0,
         "last_indexed_at": None,
+        "git_remote": git.get("url", ""),
+        "git_host": git.get("host", ""),
+        "git_branch": git.get("branch", ""),
+        "git_commit": git.get("commit", ""),
     }
     return engine.add(
         name=display_name,
@@ -95,13 +178,23 @@ def mark_indexed(
     files: int,
     symbols: int,
 ) -> None:
-    """Stamp a source as freshly indexed. No-op if the source is missing."""
+    """Stamp a source as freshly indexed. Refreshes git_commit / git_branch
+    so the user can see what HEAD the index reflects (and detect drift on
+    next reindex)."""
     c = engine.get(source_id)
     if c is None:
         return
     c.metadata["indexed_files"] = files
     c.metadata["indexed_symbols"] = symbols
     c.metadata["last_indexed_at"] = datetime.now(timezone.utc).isoformat()
+    # Re-detect git state so the indexed_at + commit pair tells the truth.
+    repo_path = Path(str(c.metadata.get("path", "")))
+    if repo_path.exists():
+        git = _detect_git_info(repo_path)
+        if git.get("commit"):
+            c.metadata["git_commit"] = git["commit"]
+        if git.get("branch"):
+            c.metadata["git_branch"] = git["branch"]
     engine.put(c)
 
 

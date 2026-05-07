@@ -5,7 +5,35 @@
     ListCodeSources,
     GetConcepts,
     FileSymbols,
+    SourceStats,
+    LinkCrossRepo,
   } from "../../wailsjs/go/main/App.js";
+
+  let sourceStats: any = null;
+  let linkRunning = false;
+  let linkResult: any = null;
+  let sourceById: Record<string, any> = {};
+
+  async function runLinker() {
+    linkRunning = true;
+    linkResult = null;
+    try {
+      linkResult = await LinkCrossRepo(0.7);
+      // refresh active source's stats
+      if (activeSource) await loadSourceStats(activeSource.id);
+    } finally {
+      linkRunning = false;
+    }
+  }
+
+  async function loadSourceStats(id: string) {
+    sourceStats = null;
+    try {
+      sourceStats = await SourceStats(id);
+    } catch (e: any) {
+      // tolerate
+    }
+  }
 
   // File-drilldown state
   let activeFile: any = null;
@@ -13,14 +41,23 @@
   let fileSymbolsLoading = false;
   let activeSymbol: any = null;
 
+  let fileContext: any = null;
+  let symbolContext: any = null;
+
   async function pickFile(f: any) {
     activeFile = f;
     activeSymbol = null;
+    symbolContext = null;
     fileSymbols = [];
+    fileContext = null;
     fileSymbolsLoading = true;
     try {
-      const res = await FileSymbols(f.metadata.source_id, f.id);
-      fileSymbols = res?.symbols ?? [];
+      const [syms, ctx] = await Promise.all([
+        FileSymbols(f.metadata.source_id, f.id),
+        GetNodeNeighborhood(f.id).catch(() => null),
+      ]);
+      fileSymbols = syms?.symbols ?? [];
+      fileContext = ctx;
     } catch (e: any) {
       error = String(e?.message || e);
     } finally {
@@ -28,8 +65,31 @@
     }
   }
 
-  function pickSymbol(s: any) {
+  async function pickSymbol(s: any) {
     activeSymbol = s;
+    symbolContext = null;
+    try {
+      symbolContext = await GetNodeNeighborhood(s.id);
+    } catch {
+      // tolerate
+    }
+  }
+
+  function fmtCommit(sha: string): string {
+    return sha ? sha.slice(0, 7) : "—";
+  }
+  function fmtBytes(n: number | null): string {
+    if (!n) return "—";
+    if (n < 1024) return `${n}B`;
+    if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)}KB`;
+    return `${(n / 1024 / 1024).toFixed(1)}MB`;
+  }
+  function hostBadge(host: string): { name: string; bg: string; fg: string } {
+    if (host === "github") return { name: "GitHub", bg: "#1f2328", fg: "#ffffff" };
+    if (host === "gitlab") return { name: "GitLab", bg: "#fc6d26", fg: "#ffffff" };
+    if (host === "bitbucket") return { name: "Bitbucket", bg: "#0052cc", fg: "#ffffff" };
+    if (host === "azure") return { name: "Azure", bg: "#0078d4", fg: "#ffffff" };
+    return { name: "Git", bg: "#6b7280", fg: "#ffffff" };
   }
 
   // Language icons sourced from authfi-website. Missing icons fall back
@@ -122,9 +182,16 @@
   async function pickSource(src: any) {
     activeSource = src;
     activeFiles = [];
+    activeFile = null;
+    activeSymbol = null;
+    fileSymbols = [];
     filesLoading = true;
+    loadSourceStats(src.id);
     try {
-      const res = await GetConcepts("file", 500, 0);
+      // Build a quick lookup of all sources by id so cross-repo chips can
+      // resolve target ids → names.
+      sourceById = Object.fromEntries(sources.map((s) => [s.id, s]));
+      const res = await GetConcepts("file", 2000, 0);
       const all = res?.concepts ?? [];
       activeFiles = all.filter(
         (f: any) => f.metadata?.source_id === src.id,

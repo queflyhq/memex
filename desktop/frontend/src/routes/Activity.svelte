@@ -27,17 +27,24 @@
     "afk_enabled", "afk_disabled", "afk_expired",
   ];
 
+  let limit = 1000;
+
   async function load(silent = false) {
     if (!silent) loading = true;
     error = null;
     try {
-      const res = await GetEvents(kindFilter, 500);
+      const res = await GetEvents(kindFilter, limit);
       events = res.events ?? [];
     } catch (e: any) {
       error = String(e?.message || e);
     } finally {
       loading = false;
     }
+  }
+
+  function loadMore() {
+    limit += 1000;
+    load();
   }
 
   onMount(() => {
@@ -204,6 +211,12 @@
         </div>
       </div>
     {/each}
+    {#if events.length >= limit}
+      <div class="load-more">
+        <button on:click={loadMore}>load more (+1000)</button>
+        <span class="muted small">showing {events.length} of {events.length}+ — daemon caps each call</span>
+      </div>
+    {/if}
   </div>
 {/if}
 
@@ -362,6 +375,27 @@
   }
   .small {
     font-size: 11px;
+  }
+  .load-more {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    gap: 12px;
+    margin: 16px 0;
+  }
+  .load-more button {
+    background: #fef3c7;
+    border: 1px solid #fde047;
+    color: #1f2328;
+    padding: 6px 16px;
+    border-radius: 5px;
+    font-size: 12px;
+    font-weight: 600;
+    font-family: inherit;
+    cursor: pointer;
+  }
+  .load-more button:hover {
+    background: #fde047;
   }
   .muted {
     color: #6b7280;

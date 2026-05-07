@@ -215,18 +215,30 @@ def _compute_stats(
         ).fetchall()
     tasks_by_status = {(s or "pending"): n for s, n in tasks_by_status_rows}
 
-    # Episodic events. The store doesn't expose a "give me everything"
-    # call, so use a generous limit for window-aware aggregation.
-    events_window = engine.episodic.recent(limit=10_000)
-    # window_hours=None or 0 means "all time" — only filter when there's
-    # an actual positive window. Earlier we treated 0 as "last 0 hours"
-    # which always evaluated to an empty filter; that's a bug.
+    # Aggregate events via SQL — earlier we sampled engine.episodic.recent(
+    # 10_000), which blew up after the cross-repo linker dumped 13.4k
+    # edge_added events into the stream and drowned every other kind in
+    # the sample window. SQL GROUP BY scales to any volume.
+    epi_conn = engine.episodic.conn
+    epi_lock = engine.episodic._lock
+    where = ""
+    params: list[Any] = []
     if window_hours is not None and window_hours > 0:
         cutoff = datetime.now(timezone.utc) - timedelta(hours=window_hours)
-        events_window = [e for e in events_window if e.timestamp >= cutoff]
-
-    events_by_kind = Counter(e.kind for e in events_window)
-    events_by_actor = Counter(e.actor.value for e in events_window)
+        where = "WHERE timestamp >= ?"
+        params.append(cutoff)
+    with epi_lock:
+        events_total_window = int(epi_conn.execute(
+            f"SELECT count(*) FROM events {where}", params,
+        ).fetchone()[0])
+        events_by_kind = dict(epi_conn.execute(
+            f"SELECT kind, count(*) FROM events {where} GROUP BY kind",
+            params,
+        ).fetchall())
+        events_by_actor = dict(epi_conn.execute(
+            f"SELECT actor, count(*) FROM events {where} GROUP BY actor",
+            params,
+        ).fetchall())
 
     impact_tiles = {
         "auto_approvals": events_by_kind.get("auto_approval", 0),
@@ -234,20 +246,36 @@ def _compute_stats(
         "secrets_redacted": events_by_kind.get("secret_redacted", 0),
         "user_corrections": events_by_kind.get("user_correction", 0),
         "files_reindexed": events_by_kind.get("file_reindexed", 0),
-        "tool_calls_observed": events_by_kind.get("tool_call", 0),
+        # Sum every hook-fire kind so the tile reflects real Claude Code
+        # activity. Hooks emit tool_pre / tool_post; legacy tool_call also
+        # counted for forward-compat with older hook configs.
+        "tool_calls_observed": (
+            events_by_kind.get("tool_pre", 0)
+            + events_by_kind.get("tool_post", 0)
+            + events_by_kind.get("tool_call", 0)
+        ),
         "user_prompts": events_by_kind.get("user_prompt", 0),
         "afk_sessions": events_by_kind.get("afk_enabled", 0),
+        "comments_added": events_by_kind.get("comment_added", 0),
+        "turns_observed": events_by_kind.get("turn_end", 0),
     }
 
-    # Per-tool / per-actor breakdown for the Impact rollup.
+    # Per-actor by-kind breakdown — also via SQL for volume safety.
     by_actor: dict[str, dict[str, int]] = {}
-    for ev in events_window:
-        actor = ev.actor.value
+    with epi_lock:
+        rows = epi_conn.execute(
+            f"SELECT actor, kind, count(*) FROM events {where} "
+            f"GROUP BY actor, kind",
+            params,
+        ).fetchall()
+    for actor, kind, n in rows:
         d = by_actor.setdefault(actor, {})
-        d["events_total"] = d.get("events_total", 0) + 1
-        d[ev.kind] = d.get(ev.kind, 0) + 1
+        d["events_total"] = d.get("events_total", 0) + int(n)
+        d[kind] = int(n)
 
-    # Last 30 events as a recent-activity strip.
+    # Recent activity strip — sample the most-recent 30 events via the
+    # episodic store (cheap; doesn't grow with volume).
+    recent_strip_events = engine.episodic.recent(limit=30)
     recent_strip = [
         {
             "timestamp": ev.timestamp.isoformat(),
@@ -255,7 +283,7 @@ def _compute_stats(
             "actor": ev.actor.value,
             "payload": ev.payload,
         }
-        for ev in events_window[:30]
+        for ev in recent_strip_events
     ]
 
     # Distinguish "events in the active window" from "events in DB total"
@@ -269,7 +297,7 @@ def _compute_stats(
         "edges_total": edges_total,
         "edges_by_kind": edges_by_kind,
         "events_total": events_in_db,
-        "events_in_window": len(events_window),
+        "events_in_window": events_total_window,
         "events_by_kind": dict(events_by_kind),
         "events_by_actor": dict(events_by_actor),
         # Aliases — keep compatibility with desktop tabs that read either

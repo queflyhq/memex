@@ -385,6 +385,43 @@ func (a *App) GetNodeNeighborhood(conceptID string) (map[string]any, error) {
 	return out, nil
 }
 
+// SourceStats returns per-source breakdown including cross-repo same_as
+// link counts grouped by other_source_id. Powers the Sources detail
+// "shared with N other sources" surface.
+func (a *App) SourceStats(sourceID string) (map[string]any, error) {
+	body, _, err := a.daemonGet("/sources/" + sourceID + "/stats")
+	if err != nil {
+		return nil, err
+	}
+	var out map[string]any
+	if err := json.Unmarshal(body, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// LinkCrossRepo runs the linker over every registered source and creates
+// same_as edges between same-named symbols.
+func (a *App) LinkCrossRepo(threshold float64) (map[string]any, error) {
+	body, _ := json.Marshal(map[string]any{"threshold": threshold})
+	req, _ := http.NewRequestWithContext(a.ctx, "POST",
+		a.daemonURL+"/sources/link", bytesReader(body))
+	a.applyAuth(req)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := a.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	rb, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		return map[string]any{"error": string(rb)}, nil
+	}
+	var out map[string]any
+	_ = json.Unmarshal(rb, &out)
+	return out, nil
+}
+
 // AddCodeSource registers a directory as a memex source via the daemon's
 // POST /sources/add — single-writer-fronted-by-many-clients architecture
 // avoids contesting the DuckDB writer lock with a separate engine.
