@@ -384,3 +384,183 @@ def reindex_source(
             if c.metadata.get("source_id") == source_id:
                 engine.delete(c.id)
     return index_source(engine, source_id, progress=progress)
+
+
+@dataclass(slots=True)
+class FileReindexResult:
+    """Outcome of a single-file reindex."""
+    file_id: str | None              # None when the file is untracked
+    source_id: str
+    rel_path: str
+    symbols_before: int
+    symbols_after: int
+    skipped: bool = False
+    skip_reason: str | None = None
+
+
+def reindex_file(
+    engine: "Engine",
+    abs_path: str | Path,
+) -> FileReindexResult | None:
+    """Re-chunk a single file in-place: drop its existing symbol concepts,
+    re-extract via the chunker, recreate symbols + edges. Cheap enough to
+    fire from a PostToolUse hook on every Edit/Write call without
+    measurably slowing the session.
+
+    Returns None when the path doesn't belong to any registered source.
+    Returns a FileReindexResult with `skipped=True` if the file is in a
+    source but not currently indexed (e.g., excluded by language detect).
+
+    Cross-file edges (calls / extends / imports) for OTHER files that
+    referenced this file's symbols are preserved — the dropped symbols
+    take their incoming edges with them, so re-creating with the new
+    names re-resolves on the next full source-level reindex. For now
+    this is acceptable: incremental cross-file fix-up is queued.
+    """
+    p = Path(abs_path).resolve()
+
+    # Find the source this path belongs to.
+    sources = engine.find_by_kind(NodeKind.source)
+    owning_source: Concept | None = None
+    rel_path: str | None = None
+    for s in sources:
+        root = Path(s.metadata.get("path", ""))
+        try:
+            rel = p.relative_to(root)
+            owning_source = s
+            rel_path = str(rel).replace("\\", "/")
+            break
+        except ValueError:
+            continue
+    if owning_source is None or rel_path is None:
+        return None
+
+    source_id = owning_source.id
+    language = detect_language(p)
+    if language is None:
+        return FileReindexResult(
+            file_id=None, source_id=source_id, rel_path=rel_path,
+            symbols_before=0, symbols_after=0,
+            skipped=True, skip_reason="unsupported language",
+        )
+
+    if not p.exists():
+        # File deleted — drop its concepts cleanly.
+        existing = _find_file_concept(engine, source_id, rel_path)
+        symbols_before = 0
+        if existing is not None:
+            symbols_before = _delete_file_and_symbols(engine, existing, source_id)
+        return FileReindexResult(
+            file_id=None, source_id=source_id, rel_path=rel_path,
+            symbols_before=symbols_before, symbols_after=0,
+            skipped=True, skip_reason="file no longer exists on disk",
+        )
+
+    try:
+        analysis = analyze_file(p)
+    except Exception as e:  # noqa: BLE001
+        log.warning("reindex_file: analyze %s failed: %s", p, e)
+        return FileReindexResult(
+            file_id=None, source_id=source_id, rel_path=rel_path,
+            symbols_before=0, symbols_after=0,
+            skipped=True, skip_reason=f"analyze failed: {e}",
+        )
+
+    existing = _find_file_concept(engine, source_id, rel_path)
+    symbols_before = 0
+    if existing is not None:
+        symbols_before = _delete_file_and_symbols(engine, existing, source_id)
+
+    if not analysis.chunks:
+        return FileReindexResult(
+            file_id=None, source_id=source_id, rel_path=rel_path,
+            symbols_before=symbols_before, symbols_after=0,
+            skipped=True, skip_reason="no chunks produced",
+        )
+
+    file_concept = engine.add(
+        name=rel_path,
+        description=f"{language} file in {owning_source.name}",
+        kind=NodeKind.file,
+        source=SourceActor.agent,
+        metadata={
+            "source_id": source_id,
+            "language": language,
+            "abs_path": str(p),
+            "rel_path": rel_path,
+        },
+    )
+    engine.link(
+        from_id=file_concept.id, to_id=source_id,
+        kind=EdgeKind.part_of, source=SourceActor.agent,
+    )
+
+    local_symbols: dict[str, Concept] = {}
+    for chunk in analysis.chunks:
+        sym = _store_symbol(engine, chunk, file_concept.id, source_id)
+        local_symbols[chunk.name] = sym
+    for chunk in analysis.chunks:
+        if chunk.parent_symbol and chunk.parent_symbol in local_symbols:
+            engine.link(
+                from_id=local_symbols[chunk.name].id,
+                to_id=local_symbols[chunk.parent_symbol].id,
+                kind=EdgeKind.part_of,
+                source=SourceActor.agent,
+            )
+
+    # Within-file calls + extends. Cross-file edges fix up on full reindex
+    # (acceptable trade-off — incremental cross-file linker is queued).
+    by_name = {c.name: local_symbols[c.name] for c in analysis.chunks}
+    for chunk in analysis.chunks:
+        sym = local_symbols[chunk.name]
+        for callee in chunk.calls:
+            if callee == chunk.name:
+                continue
+            target = by_name.get(callee)
+            if target is None or target.id == sym.id:
+                continue
+            engine.link(
+                from_id=sym.id, to_id=target.id,
+                kind=EdgeKind.calls, source=SourceActor.agent,
+            )
+        for parent in chunk.extends:
+            target = by_name.get(parent)
+            if target is None:
+                continue
+            engine.link(
+                from_id=sym.id, to_id=target.id,
+                kind=EdgeKind.extends, source=SourceActor.agent,
+            )
+
+    return FileReindexResult(
+        file_id=file_concept.id, source_id=source_id, rel_path=rel_path,
+        symbols_before=symbols_before, symbols_after=len(analysis.chunks),
+    )
+
+
+def _find_file_concept(
+    engine: "Engine",
+    source_id: str,
+    rel_path: str,
+) -> Concept | None:
+    for c in engine.find_by_kind(NodeKind.file):
+        if (c.metadata.get("source_id") == source_id
+                and c.metadata.get("rel_path") == rel_path):
+            return c
+    return None
+
+
+def _delete_file_and_symbols(
+    engine: "Engine",
+    file_concept: Concept,
+    source_id: str,
+) -> int:
+    """Drop a file concept + every symbol whose `file_id` points at it.
+    Returns the number of symbols deleted."""
+    deleted_syms = 0
+    for sym in engine.find_by_kind(NodeKind.symbol):
+        if sym.metadata.get("file_id") == file_concept.id:
+            engine.delete(sym.id)
+            deleted_syms += 1
+    engine.delete(file_concept.id)
+    return deleted_syms

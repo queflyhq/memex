@@ -805,7 +805,8 @@ def hooks_install(
                 {
                     "matcher": "*",
                     "hooks": [
-                        {"type": "command", "command": "memex observe-event user_prompt --actor=human"}
+                        # Active guidance: recall-driven context injection for the turn.
+                        {"type": "command", "command": "memex hook user-prompt --actor=human"}
                     ],
                 }
             ],
@@ -822,6 +823,13 @@ def hooks_install(
                     "matcher": "TodoWrite",
                     "hooks": [
                         {"type": "command", "command": "memex todowrite-sync"}
+                    ],
+                },
+                {
+                    "matcher": "Edit|Write|MultiEdit",
+                    "hooks": [
+                        # Keep codebase memory current — re-chunk the edited file.
+                        {"type": "command", "command": "memex hook post-edit"}
                     ],
                 },
                 {
@@ -1886,6 +1894,184 @@ def secret_redact_cmd(
             f"[yellow]redacted {len(result.events)} secret(s)[/yellow] — "
             + ", ".join(f"{e.pattern_name} → {e.handle}" for e in result.events)
         )
+
+
+# ----------------------------------------------------------------------------
+# Hook commands — invoked by Claude Code's hook handlers. Each reads the
+# event JSON on stdin and emits hook-output JSON on stdout (or exits 0 with
+# nothing). Latency budget: <50ms — these run on the request hot path.
+# ----------------------------------------------------------------------------
+
+
+hook_app = typer.Typer(
+    name="hook",
+    help="Hook handlers for Claude Code (and other AI tools). Each command "
+         "reads the hook's JSON payload on stdin and emits the response on stdout.",
+    no_args_is_help=True,
+)
+app.add_typer(hook_app)
+
+
+def _read_hook_stdin() -> dict:
+    """Read + parse the hook's JSON event payload from stdin. Returns
+    an empty dict on parse failure — hooks must never break the session."""
+    import json as _json
+    import sys as _sys
+    raw = _sys.stdin.read()
+    if not raw.strip():
+        return {}
+    try:
+        return _json.loads(raw)
+    except _json.JSONDecodeError as e:
+        # Loud-but-non-fatal: log to stderr, return empty so Claude Code
+        # falls through to its default behavior.
+        err_console.print(f"[red]hook: invalid JSON on stdin:[/red] {e}")
+        return {}
+
+
+def _emit_hook_output(payload: dict) -> None:
+    """Write the JSON response Claude Code reads from the hook's stdout."""
+    import json as _json
+    import sys as _sys
+    _sys.stdout.write(_json.dumps(payload))
+    _sys.stdout.write("\n")
+    _sys.stdout.flush()
+
+
+@hook_app.command("user-prompt")
+def hook_user_prompt(
+    actor: Annotated[str, typer.Option("--actor")] = "human",
+    budget_tokens: Annotated[int, typer.Option(
+        "--budget", help="Token budget for the recall call.",
+    )] = 600,
+    expand_hops: Annotated[int, typer.Option(
+        "--expand-hops", help="Edges of neighborhood to walk in recall.",
+    )] = 1,
+) -> None:
+    """UserPromptSubmit hook — observe the prompt + inject relevant memex
+    recall as `additionalContext` so Claude sees prior decisions /
+    constraints / corrections / matching code symbols before responding.
+
+    This is the active-guidance entry point: each turn, memex pulls
+    what it knows about the prompt's topic into Claude's context for free.
+    """
+    import json as _json
+
+    event = _read_hook_stdin()
+    prompt_text = (
+        event.get("prompt")
+        or event.get("user_prompt")
+        or event.get("text")
+        or ""
+    )
+    if not isinstance(prompt_text, str):
+        prompt_text = str(prompt_text)
+    prompt_text = prompt_text.strip()
+    if not prompt_text:
+        return
+
+    # Observe the prompt (existing pattern).
+    settings = get_settings()
+    payload = _scrub_event_payload(event)
+    additional_context: str | None = None
+
+    try:
+        from memex.frontends.mcp.client import MemexClient
+        from memex.frontends.mcp.daemon import (
+            daemon_url, ensure_daemon, is_daemon_alive,
+        )
+        url = daemon_url(settings)
+        if not settings.daemon_url and not is_daemon_alive(url, settings.auth_token):
+            url = ensure_daemon(settings)
+        with MemexClient(base_url=url, auth_token=settings.auth_token, timeout=3.0) as c:
+            c.observe(kind="user_prompt", actor=actor, payload=payload)
+            recall_result = c.recall(
+                query=prompt_text,
+                budget_tokens=budget_tokens,
+                expand_hops=expand_hops,
+            )
+            additional_context = _format_recall_for_context(recall_result)
+    except Exception as e:  # noqa: BLE001
+        log = logging.getLogger(__name__)
+        log.warning("hook user-prompt: recall failed: %s", e)
+        return
+
+    if additional_context:
+        _emit_hook_output({"additionalContext": additional_context})
+
+
+def _format_recall_for_context(result: dict | object) -> str:
+    """Render a recall result as compact prose suitable for
+    additionalContext injection. Empty when there's nothing relevant."""
+    if hasattr(result, "to_dict"):
+        d = result.to_dict()
+    elif isinstance(result, dict):
+        d = result
+    else:
+        return ""
+    nodes = d.get("nodes") or []
+    if not nodes:
+        return ""
+    lines = ["[memex recall — relevant prior knowledge]"]
+    for n in nodes[:8]:
+        kind = n.get("kind", "fact")
+        name = n.get("name", "")
+        desc = (n.get("description") or "").strip()
+        first_line = desc.split("\n", 1)[0][:200] if desc else ""
+        lines.append(f"- ({kind}) {name}" + (f": {first_line}" if first_line else ""))
+    if d.get("degraded"):
+        reason = d.get("degraded_reason") or ""
+        lines.append(f"[memex degraded: {reason}]")
+    return "\n".join(lines)
+
+
+@hook_app.command("post-edit")
+def hook_post_edit() -> None:
+    """PostToolUse hook (matcher Edit|Write|MultiEdit) — re-chunk the
+    edited file in memex's codebase memory so subsequent recalls see
+    the new structure. Idempotent + cheap (single-file, <100ms typical).
+    No output — observation-only.
+    """
+    event = _read_hook_stdin()
+    tool_input = event.get("tool_input") or {}
+    file_path = (
+        tool_input.get("file_path")
+        or tool_input.get("path")
+        or event.get("file_path")
+    )
+    if not file_path or not isinstance(file_path, str):
+        return
+
+    settings = get_settings()
+    try:
+        from memex.codebase import reindex_file as _reindex_file
+        engine = Engine.build_default(settings)
+    except Exception as e:  # noqa: BLE001
+        log = logging.getLogger(__name__)
+        log.warning("hook post-edit: engine init failed: %s", e)
+        return
+    try:
+        result = _reindex_file(engine, file_path)
+        if result is None:
+            # Path wasn't under any registered source — silent ignore.
+            return
+        engine.observe(
+            kind="file_reindexed",
+            actor=Source.agent,
+            payload={
+                "rel_path": result.rel_path,
+                "source_id": result.source_id,
+                "symbols_before": result.symbols_before,
+                "symbols_after": result.symbols_after,
+                "skipped": result.skipped,
+                "skip_reason": result.skip_reason,
+            },
+        )
+    except Exception as e:  # noqa: BLE001
+        log = logging.getLogger(__name__)
+        log.warning("hook post-edit: reindex_file failed: %s", e)
+    finally:
+        engine.close()
 
 
 if __name__ == "__main__":

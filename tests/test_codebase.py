@@ -594,6 +594,70 @@ def test_recall_code_uses_vector_similarity_for_intent_queries(
         assert names[0] == "validateLogin"
 
 
+# ---- file-level reindex (the hooks-friendly primitive) ----------------------
+
+
+def test_reindex_file_picks_up_new_symbols(engine: Engine, tmp_path: Path):
+    """After editing a file, reindex_file replaces its symbols in-place
+    without touching other files in the source."""
+    from memex.codebase import reindex_file
+
+    code_root = tmp_path / "demo-pkg"
+    code_root.mkdir()
+    (code_root / "a.py").write_text("def alpha(): return 1\n", encoding="utf-8")
+    (code_root / "b.py").write_text("def bravo(): return 2\n", encoding="utf-8")
+    src = add_source(engine, code_root)
+    index_source(engine, src.id)
+
+    # Edit a.py and reindex just that file.
+    (code_root / "a.py").write_text(
+        "def alpha(): return 1\n\ndef alpha2(): return 11\n", encoding="utf-8"
+    )
+    result = reindex_file(engine, code_root / "a.py")
+    assert result is not None
+    assert result.skipped is False
+    assert result.symbols_after >= 2
+
+    # New symbol exists.
+    syms = [c for c in engine.find_by_kind(NodeKind.symbol)
+            if c.metadata.get("source_id") == src.id]
+    names = {s.name for s in syms}
+    assert "alpha2" in names
+    # b.py wasn't touched — its symbol still there.
+    assert "bravo" in names
+
+
+def test_reindex_file_handles_deletion(engine: Engine, tmp_path: Path):
+    """If the file no longer exists on disk, reindex_file drops its
+    concepts cleanly without errors."""
+    from memex.codebase import reindex_file
+
+    code_root = tmp_path / "demo-pkg"
+    code_root.mkdir()
+    (code_root / "a.py").write_text("def alpha(): return 1\n", encoding="utf-8")
+    src = add_source(engine, code_root)
+    index_source(engine, src.id)
+
+    # Delete the file and reindex.
+    (code_root / "a.py").unlink()
+    result = reindex_file(engine, code_root / "a.py")
+    assert result is not None
+    assert result.skipped is True
+    assert "no longer exists" in (result.skip_reason or "")
+    syms = [c for c in engine.find_by_kind(NodeKind.symbol)
+            if c.metadata.get("source_id") == src.id]
+    assert all(s.name != "alpha" for s in syms)
+
+
+def test_reindex_file_outside_source_returns_none(engine: Engine, tmp_path: Path):
+    """A path that doesn't belong to any registered source is a no-op."""
+    from memex.codebase import reindex_file
+
+    other = tmp_path / "outside.py"
+    other.write_text("def x(): pass\n", encoding="utf-8")
+    assert reindex_file(engine, other) is None
+
+
 def test_unresolved_calls_dont_pollute_graph(engine: Engine, tmp_path: Path):
     """Calls to external/builtin names (e.g. `print`, `len`) shouldn't
     create dangling edges — they're left for cross-repo linker pass."""
