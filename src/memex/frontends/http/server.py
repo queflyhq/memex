@@ -488,6 +488,84 @@ class HTTPFrontend:
                 "changed": bool(events),
             }
 
+        @app.post("/upstreams/install", tags=["integrations"], dependencies=[Depends(check_auth)])
+        def upstreams_install(body: dict[str, Any] = Body(...)) -> dict[str, Any]:
+            """Install a catalog entry into upstreams.json. Body:
+              {"catalog_id": "github", "name": null}
+            Daemon needs a restart for the new upstream to become active —
+            response includes a restart_required:true flag."""
+            from memex.upstreams.catalog import find_entry
+            from memex.upstreams.config import UpstreamConfig, UpstreamsFile
+            from memex.upstreams import load_upstreams
+            import json as _json
+            catalog_id = body.get("catalog_id") or body.get("id")
+            name_override = body.get("name")
+            if not catalog_id:
+                raise HTTPException(status_code=400, detail="catalog_id required")
+            e = find_entry(catalog_id)
+            if e is None:
+                raise HTTPException(status_code=404, detail=f"not in catalog: {catalog_id}")
+            rendered = e.render()
+            if name_override:
+                rendered["name"] = name_override
+            new_cfg = UpstreamConfig.model_validate(rendered)
+            # Read existing config + append. Prefer project-local
+            # ./.memex/upstreams.json when its parent dir exists, else
+            # ~/.memex/upstreams.json (user scope) — same precedence as
+            # the memex CLI.
+            from pathlib import Path as _P
+            proj = _P.cwd() / ".memex" / "upstreams.json"
+            path = proj if proj.parent.is_dir() else _P.home() / ".memex" / "upstreams.json"
+            file_obj: UpstreamsFile
+            if path.is_file():
+                file_obj = UpstreamsFile.model_validate(
+                    _json.loads(path.read_text(encoding="utf-8"))
+                )
+            else:
+                file_obj = UpstreamsFile()
+            if any(u.name == new_cfg.name for u in file_obj.upstreams):
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"upstream `{new_cfg.name}` already configured",
+                )
+            file_obj.upstreams.append(new_cfg)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(
+                _json.dumps(file_obj.model_dump(mode="json"), indent=2),
+                encoding="utf-8",
+            )
+            return {
+                "name": new_cfg.name,
+                "path": str(path),
+                "setup_steps": list(e.setup_steps or []),
+                "paired_skills": list(e.paired_skills or []),
+                "restart_required": True,
+            }
+
+        @app.delete("/upstreams/{name}", tags=["integrations"], dependencies=[Depends(check_auth)])
+        def upstreams_remove(name: str) -> dict[str, Any]:
+            """Remove an upstream from upstreams.json. Daemon restart
+            needed to actually drop the active connection."""
+            from memex.upstreams.config import UpstreamsFile
+            from pathlib import Path as _P
+            import json as _json
+            proj = _P.cwd() / ".memex" / "upstreams.json"
+            path = proj if proj.is_file() else _P.home() / ".memex" / "upstreams.json"
+            if not path.is_file():
+                raise HTTPException(status_code=404, detail="no upstreams.json")
+            file_obj = UpstreamsFile.model_validate(
+                _json.loads(path.read_text(encoding="utf-8"))
+            )
+            before = len(file_obj.upstreams)
+            file_obj.upstreams = [u for u in file_obj.upstreams if u.name != name]
+            if len(file_obj.upstreams) == before:
+                raise HTTPException(status_code=404, detail=f"upstream `{name}` not found")
+            path.write_text(
+                _json.dumps(file_obj.model_dump(mode="json"), indent=2),
+                encoding="utf-8",
+            )
+            return {"removed": name, "restart_required": True}
+
         @app.get("/upstreams", tags=["integrations"], dependencies=[Depends(check_auth)])
         def upstreams_list() -> dict[str, Any]:
             """Configured upstream MCP servers + their connection status."""

@@ -6,9 +6,18 @@
   let loading = true;
   let error: string | null = null;
   let kindFilter = "";
+  let windowHours = 0; // 0 = no time filter
   let pollHandle: number | undefined;
   let nowTick = Date.now();
   let tickHandle: number | undefined;
+
+  const windowOptions = [
+    { id: 1,        label: "Last hour" },
+    { id: 24,       label: "Today" },
+    { id: 24 * 7,   label: "This week" },
+    { id: 24 * 30,  label: "This month" },
+    { id: 0,        label: "All time" },
+  ];
 
   const kindOptions = [
     "", "user_prompt", "tool_call", "tool_pre", "tool_post",
@@ -88,11 +97,19 @@
     return "#6b7280";
   }
 
+  // Apply client-side window filter (cheaper than re-fetching). Daemon
+  // returned the most recent N events; we just clip by timestamp.
+  $: filteredEvents = (() => {
+    if (!windowHours || windowHours <= 0) return events;
+    const cutoff = nowTick - windowHours * 3600_000;
+    return events.filter((e: any) => new Date(e.timestamp).getTime() >= cutoff);
+  })();
+
   // Group consecutive identical events ("auto_approval × 12 in 4 minutes").
   // First we bucket by relative day, then within each bucket we collapse runs.
   $: buckets = (() => {
     const groups: Bucket[] = [];
-    for (const ev of events) {
+    for (const ev of filteredEvents) {
       const label = relativeBucket(ev.timestamp);
       let g = groups[groups.length - 1];
       if (!g || g.label !== label) {
@@ -129,13 +146,23 @@
     </div>
   </div>
   <div class="controls">
+    <div class="window-tabs">
+      {#each windowOptions as opt}
+        <button
+          class:active={windowHours === opt.id}
+          on:click={() => (windowHours = opt.id)}
+        >
+          {opt.label}
+        </button>
+      {/each}
+    </div>
     <select bind:value={kindFilter}>
       {#each kindOptions as k}
         <option value={k}>{k || "(all kinds)"}</option>
       {/each}
     </select>
     <span class="muted small">
-      {#if !loading}{events.length} events{/if}
+      {#if !loading}{filteredEvents.length} of {events.length}{/if}
     </span>
   </div>
 </header>
@@ -207,6 +234,30 @@
     display: flex;
     gap: 10px;
     align-items: center;
+    flex-wrap: wrap;
+  }
+  .window-tabs {
+    display: flex;
+    gap: 3px;
+  }
+  .window-tabs button {
+    background: #ffffff;
+    color: #57606a;
+    border: 1px solid #d0d7de;
+    padding: 4px 10px;
+    border-radius: 5px;
+    font-size: 11px;
+    cursor: pointer;
+    font-family: inherit;
+  }
+  .window-tabs button:hover {
+    background: #f3f4f6;
+  }
+  .window-tabs button.active {
+    background: #fef3c7;
+    color: #1f2328;
+    border-color: #fde047;
+    font-weight: 600;
   }
   select {
     background: #ffffff;

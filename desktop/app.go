@@ -663,6 +663,71 @@ func (a *App) UpstreamCatalog() (map[string]any, error) {
 	return out, nil
 }
 
+// InstallUpstream installs a catalog entry into upstreams.json.
+// Daemon restart is needed for the new upstream to actually start
+// proxying tools — `restart_required:true` flag in the response.
+func (a *App) InstallUpstream(catalogID string, name string) (map[string]any, error) {
+	body, _ := json.Marshal(map[string]any{
+		"catalog_id": catalogID, "name": name,
+	})
+	req, _ := http.NewRequestWithContext(a.ctx, "POST",
+		a.daemonURL+"/upstreams/install", bytesReader(body))
+	a.applyAuth(req)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := a.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	rb, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		return map[string]any{"error": fmt.Sprintf("daemon %d: %s", resp.StatusCode, string(rb))}, nil
+	}
+	var out map[string]any
+	_ = json.Unmarshal(rb, &out)
+	return out, nil
+}
+
+// RemoveUpstream deletes an upstream from upstreams.json.
+func (a *App) RemoveUpstream(name string) (map[string]any, error) {
+	req, _ := http.NewRequestWithContext(a.ctx, "DELETE",
+		a.daemonURL+"/upstreams/"+name, nil)
+	a.applyAuth(req)
+	resp, err := a.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	rb, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		return map[string]any{"error": string(rb)}, nil
+	}
+	var out map[string]any
+	_ = json.Unmarshal(rb, &out)
+	return out, nil
+}
+
+// InstallSkill installs a built-in or registry skill bundle into memex.
+func (a *App) InstallSkill(name string) (map[string]any, error) {
+	body, _ := json.Marshal(map[string]any{"name": name})
+	req, _ := http.NewRequestWithContext(a.ctx, "POST",
+		a.daemonURL+"/skills/install", bytesReader(body))
+	a.applyAuth(req)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := a.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	rb, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		return map[string]any{"error": fmt.Sprintf("daemon %d: %s", resp.StatusCode, string(rb))}, nil
+	}
+	var out map[string]any
+	_ = json.Unmarshal(rb, &out)
+	return out, nil
+}
+
 // GetHooksStatus reads ~/.claude/settings.json and reports whether memex
 // hooks are wired into Claude Code. Used by the desktop Dashboard to
 // distinguish "hooks not installed" from "hooks installed, no events yet".

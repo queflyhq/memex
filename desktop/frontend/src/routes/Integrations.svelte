@@ -4,7 +4,47 @@
     ListUpstreams,
     UpstreamCatalog,
     GetHooksStatus,
+    InstallUpstream,
+    RemoveUpstream,
   } from "../../wailsjs/go/main/App.js";
+
+  let installing: string | null = null;
+  let installMessage: string | null = null;
+  let installError: string | null = null;
+
+  async function installCatalog(name: string) {
+    installing = name;
+    installMessage = null;
+    installError = null;
+    try {
+      const res = await InstallUpstream(name, "");
+      if (res?.error) {
+        installError = res.error;
+      } else {
+        installMessage = `Installed ${name}. ${res?.restart_required ? "Restart the daemon to activate." : ""}`;
+        await load();
+      }
+    } catch (e: any) {
+      installError = String(e?.message || e);
+    } finally {
+      installing = null;
+    }
+  }
+
+  async function removeUpstream(name: string) {
+    if (!confirm(`Remove upstream ${name}?`)) return;
+    try {
+      const res = await RemoveUpstream(name);
+      if (res?.error) {
+        installError = res.error;
+      } else {
+        installMessage = `Removed ${name}. Restart the daemon to drop the live connection.`;
+        await load();
+      }
+    } catch (e: any) {
+      installError = String(e?.message || e);
+    }
+  }
 
   let upstreams: any[] = [];
   let catalog: any[] = [];
@@ -84,6 +124,9 @@
     </div>
   {/if}
 
+  {#if installMessage}<div class="banner banner-ok">✓ {installMessage}</div>{/if}
+  {#if installError}<div class="banner banner-warn">⚠ {installError}</div>{/if}
+
   <h2>Configured MCP upstreams ({upstreams.length})</h2>
   {#if upstreams.length === 0}
     <p class="muted">
@@ -97,6 +140,7 @@
           <div class="up-name">
             <span class="up-type">{u.type ?? "stdio"}</span>
             <strong>{u.name}</strong>
+            <button class="rm" on:click={() => removeUpstream(u.name)}>×</button>
           </div>
           {#if u.command}
             <div class="up-target mono">{u.command} {(u.args ?? []).join(" ")}</div>
@@ -136,6 +180,15 @@
           {#if e.category}<span>{e.category}</span>{/if}
           {#if e.tools?.length}<span>· {e.tools.length} tools</span>{/if}
         </div>
+        {#if !installed}
+          <button
+            class="cat-install"
+            disabled={installing === e.name}
+            on:click={() => installCatalog(e.name)}
+          >
+            {installing === e.name ? "installing…" : "+ install"}
+          </button>
+        {/if}
       </div>
     {/each}
   </div>
@@ -312,6 +365,55 @@
     font-size: 11px;
     color: #6b7280;
     margin-top: 6px;
+  }
+  .cat-install {
+    margin-top: 8px;
+    background: #fef3c7;
+    border: 1px solid #fde047;
+    color: #1f2328;
+    padding: 5px 10px;
+    border-radius: 5px;
+    font-size: 12px;
+    font-family: inherit;
+    font-weight: 600;
+    cursor: pointer;
+    width: 100%;
+  }
+  .cat-install:hover:not(:disabled) {
+    background: #fde047;
+  }
+  .cat-install:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+  .rm {
+    margin-left: auto;
+    background: transparent;
+    border: 0;
+    color: #9ca3af;
+    font-size: 16px;
+    line-height: 1;
+    padding: 0 6px;
+    cursor: pointer;
+  }
+  .rm:hover {
+    color: #dc2626;
+  }
+  .banner {
+    border-radius: 6px;
+    padding: 10px 14px;
+    margin-bottom: 12px;
+    font-size: 13px;
+  }
+  .banner-ok {
+    background: #f0fdf4;
+    border: 1px solid #bbf7d0;
+    color: #166534;
+  }
+  .banner-warn {
+    background: #fef9c3;
+    border: 1px solid #fde047;
+    color: #b45309;
   }
   .mono {
     font-family: "Fira Code", monospace;
