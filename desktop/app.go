@@ -432,6 +432,54 @@ func (a *App) ListCodeSources() (map[string]any, error) {
 	return out, nil
 }
 
+// GetHooksStatus reads ~/.claude/settings.json and reports whether memex
+// hooks are wired into Claude Code. Used by the desktop Dashboard to
+// distinguish "hooks not installed" from "hooks installed, no events yet".
+func (a *App) GetHooksStatus() (map[string]any, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return map[string]any{"installed": false, "error": err.Error()}, nil
+	}
+	settingsPath := filepath.Join(home, ".claude", "settings.json")
+	data, err := os.ReadFile(settingsPath)
+	if err != nil {
+		return map[string]any{
+			"installed": false,
+			"reason":    "settings.json not found",
+			"path":      settingsPath,
+		}, nil
+	}
+	var settings map[string]any
+	if err := json.Unmarshal(data, &settings); err != nil {
+		return map[string]any{
+			"installed": false,
+			"reason":    "settings.json parse error",
+			"error":     err.Error(),
+		}, nil
+	}
+	hooks, _ := settings["hooks"].(map[string]any)
+	wired := map[string]bool{}
+	for ev, raw := range hooks {
+		handlers, _ := raw.([]any)
+		for _, h := range handlers {
+			hm, _ := h.(map[string]any)
+			inner, _ := hm["hooks"].([]any)
+			for _, i := range inner {
+				im, _ := i.(map[string]any)
+				cmd, _ := im["command"].(string)
+				if strings.Contains(cmd, "memex") {
+					wired[ev] = true
+				}
+			}
+		}
+	}
+	return map[string]any{
+		"installed":     len(wired) > 0,
+		"events_wired":  wired,
+		"settings_path": settingsPath,
+	}, nil
+}
+
 // GetSchema returns the DuckDB schema (tables + columns + row counts).
 func (a *App) GetSchema() (map[string]any, error) {
 	body, _, err := a.daemonGet("/schema")

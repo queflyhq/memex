@@ -1,11 +1,12 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onMount, onDestroy } from "svelte";
   import { GetEvents } from "../../wailsjs/go/main/App.js";
 
   let events: any[] = [];
   let loading = true;
   let error: string | null = null;
   let kindFilter = "";
+  let pollHandle: number | undefined;
 
   const kindOptions = [
     "", "user_prompt", "tool_call", "concept_added", "edge_added",
@@ -13,8 +14,8 @@
     "user_correction", "file_reindexed", "afk_enabled", "afk_disabled",
   ];
 
-  async function load() {
-    loading = true;
+  async function load(silent = false) {
+    if (!silent) loading = true;
     error = null;
     try {
       const res = await GetEvents(kindFilter, 200);
@@ -26,7 +27,13 @@
     }
   }
 
-  onMount(() => load());
+  onMount(() => {
+    load();
+    pollHandle = window.setInterval(() => load(true), 5_000);
+  });
+  onDestroy(() => {
+    if (pollHandle) clearInterval(pollHandle);
+  });
   $: if (kindFilter !== undefined) load();
 
   function fmtTime(ts: string): string {
