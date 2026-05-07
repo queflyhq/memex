@@ -223,6 +223,79 @@ func (a *App) GetEvents(kind string, limit int) (map[string]any, error) {
 	return out, nil
 }
 
+// GetTasks pulls the project-management task list from the daemon.
+func (a *App) GetTasks(status string, limit int) (any, error) {
+	if limit <= 0 {
+		limit = 200
+	}
+	q := fmt.Sprintf("?limit=%d", limit)
+	if status != "" {
+		q += "&status=" + status
+	}
+	body, _, err := a.daemonGet("/tasks" + q)
+	if err != nil {
+		return nil, err
+	}
+	var out any
+	if err := json.Unmarshal(body, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// GetSkills pulls the available skill bundles + recent validations.
+func (a *App) GetSkills() (map[string]any, error) {
+	body, _, err := a.daemonGet("/skills")
+	if err != nil {
+		return nil, err
+	}
+	var skills any
+	if err := json.Unmarshal(body, &skills); err != nil {
+		return nil, err
+	}
+	progBody, _, err := a.daemonGet("/progress")
+	if err != nil {
+		return map[string]any{"skills": skills}, nil
+	}
+	var prog map[string]any
+	_ = json.Unmarshal(progBody, &prog)
+	return map[string]any{
+		"skills":            skills,
+		"validations_count": prog["validations_count"],
+		"validated_skills":  prog["validated_skills"],
+	}, nil
+}
+
+// GetSchema returns the DuckDB schema (tables + columns + row counts).
+func (a *App) GetSchema() (map[string]any, error) {
+	body, _, err := a.daemonGet("/schema")
+	if err != nil {
+		return nil, err
+	}
+	var out map[string]any
+	if err := json.Unmarshal(body, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// GetTableRows returns a paginated read-only sample of rows from a table.
+func (a *App) GetTableRows(table string, limit int, offset int) (map[string]any, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	q := fmt.Sprintf("?limit=%d&offset=%d", limit, offset)
+	body, _, err := a.daemonGet("/schema/" + table + "/rows" + q)
+	if err != nil {
+		return nil, err
+	}
+	var out map[string]any
+	if err := json.Unmarshal(body, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // Recall calls the daemon's /recall endpoint with a free-form query.
 func (a *App) Recall(query string, budget int, expand int) (map[string]any, error) {
 	if budget <= 0 {

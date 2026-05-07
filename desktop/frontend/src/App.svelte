@@ -5,14 +5,26 @@
     GetStats,
     GetConcepts,
     GetEdgesFor,
+    GetTasks,
+    GetSkills,
   } from "../wailsjs/go/main/App.js";
-  import qfBadge from "./assets/quefly-badge.svg";
+  import qfBadge from "./assets/quefly-badge.png";
   import Dashboard from "./routes/Dashboard.svelte";
   import Graph from "./routes/Graph.svelte";
   import Concepts from "./routes/Concepts.svelte";
   import Activity from "./routes/Activity.svelte";
+  import Tasks from "./routes/Tasks.svelte";
+  import Skills from "./routes/Skills.svelte";
+  import Database from "./routes/Database.svelte";
 
-  type Tab = "dashboard" | "graph" | "concepts" | "activity";
+  type Tab =
+    | "dashboard"
+    | "graph"
+    | "concepts"
+    | "tasks"
+    | "skills"
+    | "database"
+    | "activity";
   let active: Tab = "dashboard";
   let daemonAlive = false;
   let daemonURL = "";
@@ -27,6 +39,9 @@
     { id: "dashboard", label: "Dashboard", emoji: "⌂" },
     { id: "graph", label: "Graph", emoji: "◫" },
     { id: "concepts", label: "Concepts", emoji: "☷" },
+    { id: "tasks", label: "Tasks & Projects", emoji: "☑" },
+    { id: "skills", label: "Skills & Embeddings", emoji: "✦" },
+    { id: "database", label: "Database", emoji: "▤" },
     { id: "activity", label: "Activity", emoji: "⌚" },
   ];
 </script>
@@ -35,7 +50,10 @@
   <aside class="sidebar">
     <div class="brand">
       <img src={qfBadge} alt="Quefly" class="badge" />
-      <span>memex</span>
+      <div class="brand-text">
+        <div class="brand-name">memex-desktop</div>
+        <div class="brand-sub">by Quefly</div>
+      </div>
     </div>
     <nav>
       {#each tabs as t}
@@ -63,6 +81,12 @@
       <Graph {GetConcepts} {GetEdgesFor} />
     {:else if active === "concepts"}
       <Concepts {GetConcepts} />
+    {:else if active === "tasks"}
+      <Tasks {GetTasks} />
+    {:else if active === "skills"}
+      <Skills {GetSkills} />
+    {:else if active === "database"}
+      <Database />
     {:else if active === "activity"}
       <Activity />
     {/if}
@@ -74,8 +98,8 @@
     margin: 0;
     padding: 0;
     height: 100vh;
-    background: #0f1115;
-    color: #e6e9ef;
+    background: #ffffff;
+    color: #1f2328;
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
       "Helvetica Neue", Arial, sans-serif;
     -webkit-font-smoothing: antialiased;
@@ -87,88 +111,108 @@
 
   .layout {
     display: grid;
-    grid-template-columns: 220px 1fr;
+    grid-template-columns: 240px 1fr;
     height: 100vh;
   }
   .sidebar {
-    background: #15171c;
-    border-right: 1px solid #232631;
+    background: #fafbfc;
+    border-right: 1px solid #e6e8eb;
     display: flex;
     flex-direction: column;
     padding: 18px 14px;
   }
   .brand {
-    font-size: 18px;
-    font-weight: 600;
-    letter-spacing: 0.5px;
-    margin-bottom: 22px;
-    color: #d3d8e1;
     display: flex;
     align-items: center;
-    gap: 10px;
+    gap: 12px;
+    margin-bottom: 26px;
+    padding: 4px 6px;
   }
   .badge {
-    width: 24px;
-    height: 24px;
+    width: 44px;
+    height: 44px;
+    object-fit: contain;
+    flex-shrink: 0;
+  }
+  .brand-text {
+    display: flex;
+    flex-direction: column;
+    line-height: 1.15;
+  }
+  .brand-name {
+    font-size: 15px;
+    font-weight: 700;
+    color: #1f2328;
+    letter-spacing: -0.01em;
+  }
+  .brand-sub {
+    font-size: 11px;
+    color: #6b7280;
+    margin-top: 1px;
   }
   nav {
     display: flex;
     flex-direction: column;
-    gap: 4px;
+    gap: 2px;
     flex: 1;
   }
   nav button {
     background: transparent;
     border: 0;
-    color: #aab1bd;
+    color: #57606a;
     text-align: left;
-    padding: 9px 11px;
+    padding: 9px 12px;
     border-radius: 6px;
     cursor: pointer;
     font-size: 14px;
+    font-family: inherit;
     display: flex;
     align-items: center;
-    gap: 10px;
+    gap: 12px;
     transition: background 0.1s ease;
   }
   nav button:hover {
-    background: #1c1f26;
-    color: #e6e9ef;
+    background: #eef0f2;
+    color: #1f2328;
   }
   nav button.active {
-    background: #232936;
-    color: #ffffff;
+    background: #fef3c7;
+    color: #1f2328;
+    font-weight: 600;
   }
   .ico {
     width: 14px;
     text-align: center;
-    color: #6f7382;
+    color: #8b96a3;
   }
   nav button.active .ico {
-    color: #74a5ff;
+    color: #b45309;
   }
   .status {
     font-size: 12px;
-    color: #6f7382;
+    color: #6b7280;
     display: flex;
     align-items: center;
     gap: 8px;
     padding: 10px 6px 0;
+    border-top: 1px solid #e6e8eb;
+    margin-top: 8px;
   }
   .dot {
     width: 8px;
     height: 8px;
     border-radius: 50%;
-    background: #6c2530;
+    background: #c0392b;
   }
   .dot.alive {
-    background: #2da46d;
+    background: #16a34a;
   }
   .muted {
-    color: #6f7382;
+    color: #6b7280;
   }
   .main {
     overflow-y: auto;
     padding: 24px 32px;
+    background: #ffffff;
   }
 </style>

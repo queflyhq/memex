@@ -199,12 +199,13 @@
     margin: 0;
     font-size: 22px;
     font-weight: 600;
+    color: #1f2328;
   }
   h2 {
     margin: 24px 0 10px;
-    font-size: 14px;
-    font-weight: 500;
-    color: #b9bfcc;
+    font-size: 12px;
+    font-weight: 600;
+    color: #6b7280;
     text-transform: uppercase;
     letter-spacing: 0.6px;
   }
@@ -213,18 +214,23 @@
     gap: 4px;
   }
   .window-tabs button {
-    background: transparent;
-    border: 1px solid #2a2e39;
-    color: #aab1bd;
+    background: #ffffff;
+    border: 1px solid #d0d7de;
+    color: #57606a;
     padding: 5px 11px;
     font-size: 12px;
     border-radius: 5px;
     cursor: pointer;
+    font-family: inherit;
+  }
+  .window-tabs button:hover {
+    background: #f3f4f6;
   }
   .window-tabs button.active {
-    background: #232936;
-    color: #ffffff;
-    border-color: #364158;
+    background: #fef3c7;
+    color: #1f2328;
+    border-color: #fde047;
+    font-weight: 600;
   }
   .grid {
     display: grid;
@@ -236,25 +242,27 @@
     grid-template-columns: repeat(3, 1fr);
   }
   .tile {
-    background: #181b22;
-    border: 1px solid #232631;
+    background: #fafbfc;
+    border: 1px solid #e6e8eb;
     border-radius: 8px;
     padding: 14px 16px;
   }
   .value {
     font-size: 24px;
-    font-weight: 600;
-    color: #ffffff;
+    font-weight: 700;
+    color: #1f2328;
   }
   .label {
     font-size: 12px;
-    color: #b9bfcc;
+    color: #1f2328;
     margin-top: 4px;
+    font-weight: 500;
   }
   .hint {
     font-size: 11px;
-    color: #6f7382;
+    color: #6b7280;
     margin-top: 2px;
+    line-height: 1.4;
   }
   .bars {
     display: flex;
@@ -269,24 +277,24 @@
     font-size: 12px;
   }
   .bar-label {
-    color: #b9bfcc;
+    color: #1f2328;
   }
   .bar-track {
-    background: #1d2029;
+    background: #f3f4f6;
     height: 8px;
     border-radius: 4px;
     overflow: hidden;
   }
   .bar-fill {
-    background: linear-gradient(90deg, #4f7dff, #74a5ff);
+    background: #fbbf24;
     height: 100%;
     display: block;
   }
   .bar-fill.alt {
-    background: linear-gradient(90deg, #2da46d, #4ec495);
+    background: #1f2328;
   }
   .bar-value {
-    color: #6f7382;
+    color: #6b7280;
     text-align: right;
     font-variant-numeric: tabular-nums;
   }
@@ -300,27 +308,29 @@
   .event {
     display: grid;
     grid-template-columns: 80px 220px 1fr;
-    color: #aab1bd;
+    color: #57606a;
+    padding: 4px 6px;
+    border-bottom: 1px solid #f3f4f6;
   }
   .ev-time {
-    color: #6f7382;
+    color: #6b7280;
   }
   .ev-kind {
-    color: #74a5ff;
+    color: #b45309;
   }
   .ev-actor {
-    color: #b9bfcc;
+    color: #1f2328;
   }
   .muted {
-    color: #6f7382;
+    color: #6b7280;
   }
   .error {
-    color: #ff8a80;
+    color: #dc2626;
   }
   .degraded {
-    background: #312618;
-    border: 1px solid #5b431f;
-    color: #f5c878;
+    background: #fef3c7;
+    border: 1px solid #fde047;
+    color: #92400e;
     padding: 10px 14px;
     border-radius: 6px;
     margin-bottom: 16px;

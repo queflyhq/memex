@@ -28,6 +28,99 @@ from memex.core.schema import EdgeKind, NodeKind, Source
 log = logging.getLogger(__name__)
 
 
+def _db_schema(engine: Engine) -> dict[str, Any]:
+    """Introspect the DuckDB connection's tables + columns + row counts."""
+    conn = engine.semantic.conn
+    lock = engine.semantic._lock
+    with lock:
+        # Tables in the main DB.
+        rows = conn.execute(
+            "SELECT table_name FROM information_schema.tables "
+            "WHERE table_schema = 'main' ORDER BY table_name"
+        ).fetchall()
+        tables: list[dict[str, Any]] = []
+        for (tname,) in rows:
+            cols = conn.execute(
+                "SELECT column_name, data_type, is_nullable "
+                "FROM information_schema.columns "
+                "WHERE table_schema = 'main' AND table_name = ? "
+                "ORDER BY ordinal_position",
+                [tname],
+            ).fetchall()
+            try:
+                count = conn.execute(
+                    f"SELECT count(*) FROM {tname}"
+                ).fetchone()[0]
+            except Exception:  # noqa: BLE001
+                count = None
+            tables.append({
+                "name": tname,
+                "row_count": count,
+                "columns": [
+                    {"name": c[0], "type": c[1], "nullable": (c[2] == "YES")}
+                    for c in cols
+                ],
+            })
+    return {"tables": tables}
+
+
+def _db_table_rows(
+    engine: Engine, table: str, *, limit: int = 50, offset: int = 0,
+) -> dict[str, Any]:
+    """Read-only sample of rows from a table. Whitelisted to prevent SQL
+    injection via the path param."""
+    allowed = {
+        "concepts", "edges", "events", "vectors",
+        "concept_history",
+    }
+    if table not in allowed:
+        raise HTTPException(status_code=400, detail=f"unknown table: {table}")
+    if limit < 1 or limit > 500:
+        limit = 50
+    if offset < 0:
+        offset = 0
+    conn = engine.semantic.conn
+    lock = engine.semantic._lock
+    with lock:
+        cols = [
+            r[0] for r in conn.execute(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_schema = 'main' AND table_name = ? "
+                "ORDER BY ordinal_position",
+                [table],
+            ).fetchall()
+        ]
+        # vectors table contains big arrays — sample a length, not full vector.
+        select = ", ".join(cols) if table != "vectors" else "id, len(embedding) AS dim"
+        rows = conn.execute(
+            f"SELECT {select} FROM {table} "
+            f"ORDER BY 1 LIMIT ? OFFSET ?",
+            [limit, offset],
+        ).fetchall()
+        cols_returned = cols if table != "vectors" else ["id", "dim"]
+    return {
+        "table": table,
+        "columns": cols_returned,
+        "rows": [
+            {c: _stringify(v) for c, v in zip(cols_returned, row)}
+            for row in rows
+        ],
+        "limit": limit,
+        "offset": offset,
+    }
+
+
+def _stringify(v: Any) -> Any:
+    """Render DuckDB row values as JSON-safe — datetimes → ISO strings,
+    dicts/lists pass through, bytes → repr."""
+    from datetime import date, datetime as _dt
+    if isinstance(v, (_dt, date)):
+        return v.isoformat()
+    if isinstance(v, (bytes, bytearray)):
+        return repr(v[:80])
+    return v
+
+
 def _compute_stats(
     engine: Engine,
     *,
@@ -314,6 +407,20 @@ class HTTPFrontend:
             """Episodic event feed. Backs the desktop Activity page."""
             evs = engine.episodic.recent(limit=limit, kind=kind)
             return {"events": [e.model_dump(mode="json") for e in evs]}
+
+        @app.get("/schema", tags=["read"], dependencies=[Depends(check_auth)])
+        def db_schema() -> dict[str, Any]:
+            """List every DuckDB table with columns + row count. Backs the
+            desktop Database tab so the user can see what memex actually
+            persists."""
+            return _db_schema(engine)
+
+        @app.get("/schema/{table}/rows", tags=["read"], dependencies=[Depends(check_auth)])
+        def db_table_rows(
+            table: str, limit: int = 50, offset: int = 0,
+        ) -> dict[str, Any]:
+            """Read-only sample of rows from a DuckDB table."""
+            return _db_table_rows(engine, table, limit=limit, offset=offset)
 
         @app.get("/skills", tags=["skills"], dependencies=[Depends(check_auth)])
         def list_skills() -> list[dict[str, Any]]:

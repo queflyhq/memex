@@ -85,6 +85,7 @@
     margin: 0;
     font-size: 22px;
     font-weight: 600;
+    color: #1f2328;
   }
   .controls {
     display: flex;
@@ -93,12 +94,13 @@
     font-size: 12px;
   }
   select {
-    background: #1c1f26;
-    color: #e6e9ef;
-    border: 1px solid #2a2e39;
+    background: #ffffff;
+    color: #1f2328;
+    border: 1px solid #d0d7de;
     padding: 5px 10px;
     border-radius: 4px;
     font-size: 12px;
+    font-family: inherit;
   }
   .list {
     display: flex;
@@ -112,34 +114,35 @@
     grid-template-columns: 180px 220px 110px 1fr;
     align-items: center;
     gap: 10px;
-    padding: 5px 6px;
-    border-bottom: 1px solid #1d2029;
+    padding: 5px 8px;
+    border-bottom: 1px solid #f3f4f6;
   }
   .time {
-    color: #6f7382;
+    color: #6b7280;
   }
   .kind {
-    color: #74a5ff;
+    color: #b45309;
   }
   .actor {
-    color: #b9bfcc;
+    color: #1f2328;
   }
   .payload summary {
-    color: #6f7382;
+    color: #6b7280;
     cursor: pointer;
   }
   .payload pre {
-    background: #15171c;
+    background: #fafbfc;
+    border: 1px solid #e6e8eb;
     padding: 8px;
     border-radius: 4px;
     overflow-x: auto;
     margin-top: 4px;
-    color: #aab1bd;
+    color: #1f2328;
   }
   .muted {
-    color: #6f7382;
+    color: #6b7280;
   }
   .error {
-    color: #ff8a80;
+    color: #dc2626;
   }
 </style>

@@ -236,6 +236,7 @@
     margin: 0;
     font-size: 22px;
     font-weight: 600;
+    color: #1f2328;
   }
   .controls {
     display: flex;
@@ -244,20 +245,24 @@
     font-size: 12px;
   }
   select, button {
-    background: #1c1f26;
-    color: #e6e9ef;
-    border: 1px solid #2a2e39;
+    background: #ffffff;
+    color: #1f2328;
+    border: 1px solid #d0d7de;
     padding: 5px 10px;
     border-radius: 4px;
     font-size: 12px;
     cursor: pointer;
+    font-family: inherit;
+  }
+  select:hover, button:hover {
+    background: #f3f4f6;
   }
   .graph-wrap {
     position: relative;
     width: 100%;
     height: calc(100vh - 130px);
-    background: #0c0e12;
-    border: 1px solid #232631;
+    background: #ffffff;
+    border: 1px solid #e6e8eb;
     border-radius: 6px;
     overflow: hidden;
   }
@@ -271,12 +276,12 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    background: rgba(15, 17, 21, 0.6);
-    color: #6f7382;
+    background: rgba(255, 255, 255, 0.85);
+    color: #6b7280;
     font-size: 13px;
   }
   .error {
-    color: #ff8a80;
+    color: #dc2626;
   }
   .detail {
     position: absolute;
@@ -284,22 +289,23 @@
     top: 12px;
     width: 320px;
     max-height: 60%;
-    background: #15171c;
-    border: 1px solid #2a2e39;
+    background: #ffffff;
+    border: 1px solid #e6e8eb;
     border-radius: 8px;
     padding: 14px 16px 18px;
     overflow-y: auto;
+    box-shadow: 0 4px 12px rgba(31, 35, 40, 0.08);
   }
   .detail h3 {
     margin: 8px 0;
     font-size: 14px;
     font-weight: 600;
-    color: #ffffff;
+    color: #1f2328;
   }
   .detail pre {
     font-family: -apple-system, "Segoe UI", sans-serif;
     font-size: 12px;
-    color: #b9bfcc;
+    color: #4b5563;
     white-space: pre-wrap;
     word-wrap: break-word;
     margin: 0 0 10px;
@@ -320,11 +326,15 @@
     right: 6px;
     background: transparent;
     border: 0;
-    color: #6f7382;
+    color: #6b7280;
     font-size: 18px;
     cursor: pointer;
+    font-family: inherit;
+  }
+  .close:hover {
+    color: #1f2328;
   }
   .muted {
-    color: #6f7382;
+    color: #6b7280;
   }
 </style>

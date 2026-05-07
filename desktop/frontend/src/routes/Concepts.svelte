@@ -93,6 +93,7 @@
     margin: 0;
     font-size: 22px;
     font-weight: 600;
+    color: #1f2328;
   }
   .controls {
     display: flex;
@@ -101,12 +102,13 @@
     font-size: 12px;
   }
   select {
-    background: #1c1f26;
-    color: #e6e9ef;
-    border: 1px solid #2a2e39;
+    background: #ffffff;
+    color: #1f2328;
+    border: 1px solid #d0d7de;
     padding: 5px 10px;
     border-radius: 4px;
     font-size: 12px;
+    font-family: inherit;
   }
   .list {
     display: flex;
@@ -114,8 +116,8 @@
     gap: 8px;
   }
   .card {
-    background: #181b22;
-    border: 1px solid #232631;
+    background: #fafbfc;
+    border: 1px solid #e6e8eb;
     border-radius: 6px;
     padding: 10px 14px;
   }
@@ -129,27 +131,28 @@
     font-size: 10px;
     text-transform: uppercase;
     letter-spacing: 0.5px;
-    color: #74a5ff;
+    color: #b45309;
+    font-weight: 600;
   }
   .name {
     font-size: 13px;
     font-weight: 600;
-    color: #ffffff;
+    color: #1f2328;
   }
   .desc {
     font-size: 12px;
-    color: #b9bfcc;
+    color: #4b5563;
     line-height: 1.4;
   }
   .meta {
     font-size: 11px;
-    color: #6f7382;
+    color: #6b7280;
     margin-top: 4px;
   }
   .muted {
-    color: #6f7382;
+    color: #6b7280;
   }
   .error {
-    color: #ff8a80;
+    color: #dc2626;
   }
 </style>
