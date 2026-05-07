@@ -14,6 +14,8 @@ Defaults:
 from __future__ import annotations
 
 import logging
+from collections import Counter
+from datetime import datetime, timedelta, timezone
 from typing import Annotated, Any
 
 from fastapi import Body, Depends, FastAPI, Header, HTTPException
@@ -24,6 +26,98 @@ from memex.core.engine import Engine
 from memex.core.schema import EdgeKind, NodeKind, Source
 
 log = logging.getLogger(__name__)
+
+
+def _compute_stats(
+    engine: Engine,
+    *,
+    window_hours: int | None = None,
+) -> dict[str, Any]:
+    """Aggregate the desktop Dashboard / Impact payload.
+
+    Pulls concept counts (by kind), edge counts (by kind), event counts
+    (by kind + actor), task status breakdown, vector index size, and
+    derived "impact" tiles from the episodic stream. Window-clip via
+    `window_hours` for "this session / today / this week" tabs.
+    """
+    base_engine_stats = engine.stats()
+    concepts = engine.semantic.all_concepts()
+    concepts_by_kind = Counter(c.kind.value for c in concepts)
+
+    # Edge counts via a sample fan-out — DuckDB has no `all_edges()`
+    # convenience but we can derive from edges_for over every node.
+    edges_seen: dict[tuple[str, str, str], None] = {}
+    for c in concepts:
+        for e in engine.edges_for(c.id):
+            edges_seen[(e.from_id, e.to_id, e.kind.value)] = None
+    edges_by_kind: Counter[str] = Counter()
+    for _, _, kind in edges_seen:
+        edges_by_kind[kind] += 1
+    edges_total = len(edges_seen)
+
+    # Episodic events. The store doesn't expose a "give me everything"
+    # call, so use a generous limit for window-aware aggregation.
+    events_window = engine.episodic.recent(limit=10_000)
+    if window_hours is not None:
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=window_hours)
+        events_window = [e for e in events_window if e.timestamp >= cutoff]
+
+    events_by_kind = Counter(e.kind for e in events_window)
+    events_by_actor = Counter(e.actor.value for e in events_window)
+
+    impact_tiles = {
+        "auto_approvals": events_by_kind.get("auto_approval", 0),
+        "auto_denies":    events_by_kind.get("auto_deny", 0),
+        "secrets_redacted": events_by_kind.get("secret_redacted", 0),
+        "user_corrections": events_by_kind.get("user_correction", 0),
+        "files_reindexed": events_by_kind.get("file_reindexed", 0),
+        "tool_calls_observed": events_by_kind.get("tool_call", 0),
+        "user_prompts": events_by_kind.get("user_prompt", 0),
+        "afk_sessions": events_by_kind.get("afk_enabled", 0),
+    }
+
+    # Task status breakdown (for the Tasks tile + page).
+    tasks_by_status: Counter[str] = Counter()
+    for c in concepts:
+        if c.kind != NodeKind.task:
+            continue
+        st = (c.metadata or {}).get("status", "pending")
+        tasks_by_status[st] += 1
+
+    # Per-tool / per-actor breakdown for the Impact rollup.
+    by_actor: dict[str, dict[str, int]] = {}
+    for ev in events_window:
+        actor = ev.actor.value
+        d = by_actor.setdefault(actor, {})
+        d["events_total"] = d.get("events_total", 0) + 1
+        d[ev.kind] = d.get(ev.kind, 0) + 1
+
+    # Last 30 events as a recent-activity strip.
+    recent_strip = [
+        {
+            "timestamp": ev.timestamp.isoformat(),
+            "kind": ev.kind,
+            "actor": ev.actor.value,
+            "payload": ev.payload,
+        }
+        for ev in events_window[:30]
+    ]
+
+    return {
+        **base_engine_stats,
+        "concepts_total": len(concepts),
+        "concepts_by_kind": dict(concepts_by_kind),
+        "edges_total": edges_total,
+        "edges_by_kind": dict(edges_by_kind),
+        "events_total": len(events_window),
+        "events_by_kind": dict(events_by_kind),
+        "events_by_actor": dict(events_by_actor),
+        "by_actor": by_actor,
+        "tasks_by_status": dict(tasks_by_status),
+        "impact": impact_tiles,
+        "recent_events": recent_strip,
+        "window_hours": window_hours,
+    }
 
 
 _LOCAL_HOSTS = {"127.0.0.1", "localhost", "::1", "0.0.0.0"}  # 0.0.0.0 still requires token
@@ -173,6 +267,53 @@ class HTTPFrontend:
         @app.get("/progress", tags=["skills"], dependencies=[Depends(check_auth)])
         def progress(actor: Source | None = None) -> dict[str, Any]:
             return engine.progress(actor=actor)
+
+        @app.get("/stats", tags=["meta"], dependencies=[Depends(check_auth)])
+        def stats(window_hours: int | None = None) -> dict[str, Any]:
+            """Rich stats payload for the desktop Dashboard / Impact view.
+
+            Aggregates concept counts, event counts, edge counts, and
+            impact tiles (auto-approvals, redactions, corrections, etc.)
+            from the episodic stream. Optional `window_hours` clips
+            counts to the last N hours; omit for all-time totals.
+            """
+            return _compute_stats(engine, window_hours=window_hours)
+
+        @app.get("/concepts", tags=["read"], dependencies=[Depends(check_auth)])
+        def list_concepts(
+            kind: NodeKind | None = None,
+            limit: int = 200,
+            offset: int = 0,
+        ) -> dict[str, Any]:
+            """List concepts (optionally filtered by kind). Backs the
+            desktop Concepts browser."""
+            if kind is not None:
+                rows = engine.find_by_kind(kind)
+            else:
+                rows = engine.semantic.all_concepts()
+            total = len(rows)
+            window = rows[offset:offset + limit]
+            return {
+                "concepts": [c.model_dump(mode="json") for c in window],
+                "total": total,
+                "offset": offset,
+                "limit": limit,
+            }
+
+        @app.get("/edges/{concept_id}", tags=["read"], dependencies=[Depends(check_auth)])
+        def edges_for(concept_id: str) -> dict[str, Any]:
+            """Every edge touching a concept — both directions. Used by
+            the graph view to expand a node's neighborhood."""
+            edges = engine.edges_for(concept_id)
+            return {"edges": [e.model_dump(mode="json") for e in edges]}
+
+        @app.get("/events", tags=["read"], dependencies=[Depends(check_auth)])
+        def list_events(
+            kind: str | None = None, limit: int = 100,
+        ) -> dict[str, Any]:
+            """Episodic event feed. Backs the desktop Activity page."""
+            evs = engine.episodic.recent(limit=limit, kind=kind)
+            return {"events": [e.model_dump(mode="json") for e in evs]}
 
         @app.get("/skills", tags=["skills"], dependencies=[Depends(check_auth)])
         def list_skills() -> list[dict[str, Any]]:
