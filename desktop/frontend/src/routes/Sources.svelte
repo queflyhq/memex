@@ -4,8 +4,33 @@
     AddCodeSource,
     ListCodeSources,
     GetConcepts,
-    GetNodeNeighborhood,
   } from "../../wailsjs/go/main/App.js";
+
+  // Language icons sourced from authfi-website. Missing icons fall back
+  // to a colored letter chip.
+  import pythonIco from "../assets/langs/python.svg";
+  import goIco from "../assets/langs/go.svg";
+  import javaIco from "../assets/langs/java.svg";
+  import nodejsIco from "../assets/langs/nodejs.svg";
+  import terraformIco from "../assets/langs/terraform.svg";
+
+  const LANG_ICON: Record<string, string> = {
+    python: pythonIco,
+    go: goIco,
+    java: javaIco,
+    javascript: nodejsIco,
+    typescript: nodejsIco,
+    hcl: terraformIco,
+  };
+  const LANG_FALLBACK_COLOR: Record<string, string> = {
+    bash:    "#4eaa25",
+    yaml:    "#cb171e",
+    svelte:  "#ff3e00",
+    rust:    "#dea584",
+    cpp:     "#00599c",
+    csharp:  "#239120",
+    ruby:    "#cc342d",
+  };
 
   let sources: any[] = [];
   let loading = true;
@@ -17,6 +42,23 @@
   let activeSource: any = null;
   let activeFiles: any[] = [];
   let filesLoading = false;
+
+  function langCount(src: any): [string, number][] {
+    const langs = src.metadata?.languages_breakdown ?? {};
+    return Object.entries(langs as Record<string, number>).sort(
+      (a, b) => b[1] - a[1],
+    );
+  }
+
+  // Group active files by language.
+  $: filesByLang = (() => {
+    const out: Record<string, any[]> = {};
+    for (const f of activeFiles) {
+      const l = f.metadata?.language ?? "?";
+      (out[l] ??= []).push(f);
+    }
+    return Object.entries(out).sort((a, b) => b[1].length - a[1].length);
+  })();
 
   async function load() {
     loading = true;
@@ -140,6 +182,27 @@
           <span>id: <code>{activeSource.id}</code></span>
           <span>path: <code>{activeSource.metadata?.path}</code></span>
         </div>
+
+        {#if filesByLang.length > 0}
+          <h3>Languages</h3>
+          <div class="lang-row">
+            {#each filesByLang as [l, files]}
+              <div class="lang-chip">
+                {#if LANG_ICON[l]}
+                  <img src={LANG_ICON[l]} alt={l} />
+                {:else}
+                  <span
+                    class="lang-letter"
+                    style="background: {LANG_FALLBACK_COLOR[l] ?? '#6b7280'}"
+                  >{l[0]?.toUpperCase()}</span>
+                {/if}
+                <span class="lang-name">{l}</span>
+                <span class="lang-count">{files.length}</span>
+              </div>
+            {/each}
+          </div>
+        {/if}
+
         <h3>Files ({activeFiles.length})</h3>
         {#if activeFiles.length === 0}
           <p class="muted">No files indexed yet for this source.</p>
@@ -147,7 +210,14 @@
           <div class="files">
             {#each activeFiles as f}
               <div class="file">
-                <span class="lang">{f.metadata?.language ?? "?"}</span>
+                {#if LANG_ICON[f.metadata?.language]}
+                  <img class="row-ico" src={LANG_ICON[f.metadata.language]} alt={f.metadata.language} />
+                {:else}
+                  <span
+                    class="row-letter"
+                    style="background: {LANG_FALLBACK_COLOR[f.metadata?.language] ?? '#6b7280'}"
+                  >{(f.metadata?.language ?? "?")[0]?.toUpperCase()}</span>
+                {/if}
                 <span class="path">{f.name}</span>
               </div>
             {/each}
@@ -317,6 +387,47 @@
     color: #1f2328;
     font-family: "Fira Code", monospace;
   }
+  .lang-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-bottom: 12px;
+  }
+  .lang-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    background: #ffffff;
+    border: 1px solid #e6e8eb;
+    padding: 4px 10px 4px 5px;
+    border-radius: 14px;
+    font-size: 11px;
+  }
+  .lang-chip img {
+    width: 16px;
+    height: 16px;
+    object-fit: contain;
+  }
+  .lang-letter, .row-letter {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 16px;
+    height: 16px;
+    border-radius: 4px;
+    color: #ffffff;
+    font-weight: 700;
+    font-size: 10px;
+    flex-shrink: 0;
+  }
+  .lang-name {
+    color: #1f2328;
+    font-weight: 500;
+  }
+  .lang-count {
+    color: #6b7280;
+    font-variant-numeric: tabular-nums;
+  }
   .files {
     display: flex;
     flex-direction: column;
@@ -326,17 +437,16 @@
   }
   .file {
     display: grid;
-    grid-template-columns: 80px 1fr;
+    grid-template-columns: 24px 1fr;
     align-items: center;
+    gap: 8px;
     padding: 3px 6px;
     border-bottom: 1px solid #f3f4f6;
   }
-  .lang {
-    color: #b45309;
-    font-size: 10px;
-    text-transform: uppercase;
-    font-weight: 600;
-    letter-spacing: 0.4px;
+  .row-ico {
+    width: 16px;
+    height: 16px;
+    object-fit: contain;
   }
   .path {
     color: #1f2328;

@@ -335,26 +335,88 @@ func (a *App) GetNodeNeighborhood(conceptID string) (map[string]any, error) {
 	return out, nil
 }
 
-// AddCodeSource registers a directory as a memex source and (optionally)
-// indexes it. POST /add-source isn't a daemon endpoint yet so we shell
-// out to `memex source add`. Synchronous — returns when indexing finishes.
+// AddCodeSource registers a directory as a memex source via the daemon's
+// POST /sources/add — single-writer-fronted-by-many-clients architecture
+// avoids contesting the DuckDB writer lock with a separate engine.
 func (a *App) AddCodeSource(path string, indexNow bool) (map[string]any, error) {
-	args := []string{"source", "add", path}
-	if !indexNow {
-		args = append(args, "--no-index")
-	}
-	cmd := exec.Command("memex", args...)
-	out, err := cmd.CombinedOutput()
-	result := map[string]any{
-		"path":   path,
-		"output": string(out),
-	}
+	body, _ := json.Marshal(map[string]any{
+		"path":       path,
+		"index_now":  indexNow,
+	})
+	req, err := http.NewRequestWithContext(a.ctx, "POST",
+		a.daemonURL+"/sources/add", bytesReader(body))
 	if err != nil {
-		result["error"] = err.Error()
-		return result, nil
+		return nil, err
 	}
-	result["ok"] = true
-	return result, nil
+	a.applyAuth(req)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := a.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		return map[string]any{
+			"error":  fmt.Sprintf("daemon returned %d", resp.StatusCode),
+			"detail": string(respBody),
+			"path":   path,
+		}, nil
+	}
+	var out map[string]any
+	if err := json.Unmarshal(respBody, &out); err != nil {
+		return nil, err
+	}
+	out["ok"] = true
+	return out, nil
+}
+
+// ReindexSource asks the daemon to drop + rebuild a source.
+func (a *App) ReindexSource(sourceID string) (map[string]any, error) {
+	req, err := http.NewRequestWithContext(a.ctx, "POST",
+		a.daemonURL+"/sources/"+sourceID+"/reindex", nil)
+	if err != nil {
+		return nil, err
+	}
+	a.applyAuth(req)
+	resp, err := a.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	var out map[string]any
+	if err := json.Unmarshal(body, &out); err != nil {
+		return nil, err
+	}
+	if resp.StatusCode >= 400 {
+		out["error"] = fmt.Sprintf("daemon returned %d", resp.StatusCode)
+	}
+	return out, nil
+}
+
+// RemoveSource deletes a source + every file/symbol it owns.
+func (a *App) RemoveSource(sourceID string) (map[string]any, error) {
+	req, err := http.NewRequestWithContext(a.ctx, "DELETE",
+		a.daemonURL+"/sources/"+sourceID, nil)
+	if err != nil {
+		return nil, err
+	}
+	a.applyAuth(req)
+	resp, err := a.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	var out map[string]any
+	if err := json.Unmarshal(body, &out); err != nil {
+		return nil, err
+	}
+	if resp.StatusCode >= 400 {
+		out["error"] = fmt.Sprintf("daemon returned %d", resp.StatusCode)
+	}
+	return out, nil
 }
 
 // ListCodeSources returns every kind=source concept (registered codebases).

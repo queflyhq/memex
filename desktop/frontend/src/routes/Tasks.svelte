@@ -37,6 +37,9 @@
     }));
   }
 
+  let projectIndex: Record<string, any> = {};
+  let blockedByCounts: Record<string, number> = {};
+
   async function load() {
     loading = true;
     error = null;
@@ -44,12 +47,29 @@
       const res = await GetTasks("*", 500);
       tasks = Array.isArray(res) ? res : (res?.tasks ?? []);
       projects = tasks.filter((t) => t.kind === "project");
-      columns = bucket(tasks.filter((t) => t.kind === "task"));
+      // Build a project lookup so cards can show their parent project
+      // name + a blocker count without N edge fetches.
+      projectIndex = Object.fromEntries(projects.map((p) => [p.id, p]));
+      const taskRows = tasks.filter((t) => t.kind === "task");
+      blockedByCounts = {};
+      for (const t of taskRows) {
+        const blockers = t.metadata?.blocked_by;
+        if (Array.isArray(blockers) && blockers.length) {
+          blockedByCounts[t.id] = blockers.length;
+        }
+      }
+      columns = bucket(taskRows);
     } catch (e: any) {
       error = String(e?.message || e);
     } finally {
       loading = false;
     }
+  }
+
+  function projectFor(t: any): string | null {
+    const pid = t.metadata?.project_id;
+    if (!pid) return null;
+    return projectIndex[pid]?.name ?? null;
   }
 
   async function moveTask(id: string, status: string) {
@@ -203,9 +223,28 @@
               {#if t.description}
                 <div class="task-desc">{firstLine(t.description)}</div>
               {/if}
+              <div class="task-links">
+                {#if projectFor(t)}
+                  <span class="link link-project" title="parent project">
+                    📁 {projectFor(t)}
+                  </span>
+                {/if}
+                {#if blockedByCounts[t.id]}
+                  <span class="link link-blocker" title="blocked by tasks">
+                    🛇 {blockedByCounts[t.id]} blocker{blockedByCounts[t.id] > 1 ? "s" : ""}
+                  </span>
+                {/if}
+                {#if t.metadata?.spawned_from}
+                  <span class="link" title="event that spawned this">⚡ from event</span>
+                {/if}
+                {#if (t.last_confirmed_at && t.last_confirmed_at !== t.created_at)}
+                  <span class="link" title="updated since creation">✎ edited</span>
+                {/if}
+              </div>
               <div class="task-meta">
                 {#if t.metadata?.owner}<span>👤 {t.metadata.owner}</span>{/if}
                 {#if t.metadata?.due}<span>⏰ {t.metadata.due}</span>{/if}
+                <span class="open-hint">click for details →</span>
                 <button
                   class="del-btn"
                   title="delete"
@@ -460,6 +499,30 @@
     color: #57606a;
     line-height: 1.4;
   }
+  .task-links {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    margin-top: 6px;
+  }
+  .link {
+    background: #f3f4f6;
+    color: #57606a;
+    padding: 1px 6px;
+    border-radius: 9px;
+    font-size: 10px;
+    font-weight: 500;
+    line-height: 1.4;
+    white-space: nowrap;
+  }
+  .link-project {
+    background: #fef3c7;
+    color: #b45309;
+  }
+  .link-blocker {
+    background: #fee2e2;
+    color: #991b1b;
+  }
   .task-meta {
     display: flex;
     gap: 8px;
@@ -467,6 +530,18 @@
     font-size: 10px;
     color: #6b7280;
     align-items: center;
+  }
+  .open-hint {
+    margin-left: auto;
+    color: #9ca3af;
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    opacity: 0;
+    transition: opacity 0.15s ease;
+  }
+  .task:hover .open-hint {
+    opacity: 1;
   }
   .del-btn {
     margin-left: auto;

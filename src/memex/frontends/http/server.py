@@ -363,6 +363,191 @@ class HTTPFrontend:
                 raise HTTPException(status_code=404, detail="not found")
             return c.model_dump(mode="json")
 
+        @app.post("/sources/add", tags=["write"], dependencies=[Depends(check_auth)])
+        def add_source_endpoint(body: dict[str, Any] = Body(...)) -> dict[str, Any]:
+            """Register a codebase as a source and (by default) index it.
+            Lets clients (desktop, CLI-via-daemon) add sources without
+            having to spawn a separate engine that contests the DuckDB lock.
+            Body: {"path": "...", "name": null, "index_now": true}."""
+            from memex.codebase import (
+                add_source as _add_source,
+                index_source as _index_source,
+            )
+            path = body.get("path")
+            name = body.get("name")
+            index_now = bool(body.get("index_now", True))
+            if not path:
+                raise HTTPException(status_code=400, detail="missing path")
+            try:
+                src = _add_source(engine, path, name=name)
+            except Exception as e:  # noqa: BLE001
+                raise HTTPException(status_code=400, detail=f"add_source: {e}") from None
+            payload: dict[str, Any] = {
+                "id": src.id,
+                "name": src.name,
+                "path": src.metadata.get("path"),
+                "indexed": False,
+                "files": 0,
+                "symbols": 0,
+                "languages": {},
+                "skipped_files": 0,
+            }
+            if index_now:
+                try:
+                    res = _index_source(engine, src.id)
+                except Exception as e:  # noqa: BLE001
+                    raise HTTPException(status_code=500, detail=f"index_source: {e}") from None
+                payload.update({
+                    "indexed": True,
+                    "files": res.files_indexed,
+                    "symbols": res.symbols_indexed,
+                    "languages": res.languages,
+                    "skipped_files": res.skipped_files,
+                })
+            return payload
+
+        @app.post("/sources/add", tags=["write"], dependencies=[Depends(check_auth)])
+        def add_source_endpoint(body: dict[str, Any] = Body(...)) -> dict[str, Any]:
+            """Register a codebase as a source and (by default) index it.
+            Lets clients (desktop, CLI-via-daemon) add sources without
+            contesting the DuckDB writer lock.
+            Body: {"path": "...", "name": null, "index_now": true}"""
+            from memex.codebase import (
+                add_source as _add_source,
+                index_source as _index_source,
+            )
+            path = body.get("path")
+            name = body.get("name")
+            index_now = bool(body.get("index_now", True))
+            if not path:
+                raise HTTPException(status_code=400, detail="missing path")
+            try:
+                src = _add_source(engine, path, name=name)
+            except Exception as e:  # noqa: BLE001
+                raise HTTPException(status_code=400, detail=f"add_source: {e}") from None
+            payload: dict[str, Any] = {
+                "id": src.id, "name": src.name,
+                "path": src.metadata.get("path"),
+                "indexed": False, "files": 0, "symbols": 0,
+                "languages": {}, "skipped_files": 0,
+            }
+            if index_now:
+                try:
+                    res = _index_source(engine, src.id)
+                except Exception as e:  # noqa: BLE001
+                    raise HTTPException(status_code=500, detail=f"index_source: {e}") from None
+                payload.update({
+                    "indexed": True,
+                    "files": res.files_indexed,
+                    "symbols": res.symbols_indexed,
+                    "languages": res.languages,
+                    "skipped_files": res.skipped_files,
+                })
+            return payload
+
+        @app.post("/sources/link", tags=["write"], dependencies=[Depends(check_auth)])
+        def link_sources_endpoint(body: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+            """Run the cross-repo linker — creates same_as edges between
+            symbols that are likely the same logical concept across
+            registered sources. Body (all optional):
+              {"source_ids": [...], "threshold": 0.7, "dry_run": false}
+            """
+            from memex.codebase import link_cross_repo
+            try:
+                res = link_cross_repo(
+                    engine,
+                    source_ids=body.get("source_ids") or None,
+                    threshold=float(body.get("threshold") or 0.7),
+                    dry_run=bool(body.get("dry_run") or False),
+                )
+            except Exception as e:  # noqa: BLE001
+                raise HTTPException(status_code=500, detail=str(e)) from None
+            return {
+                "pairs": [
+                    {
+                        "a_id": p.a_id, "b_id": p.b_id,
+                        "a_name": p.a_name, "b_name": p.b_name,
+                        "a_source": p.a_source, "b_source": p.b_source,
+                        "similarity": p.similarity,
+                    }
+                    for p in res.pairs
+                ],
+                "pairs_created": len(res.pairs),
+                "sources_considered": res.sources_considered,
+                "candidates_examined": res.candidates_examined,
+                "skipped_generic": res.skipped_generic,
+                "skipped_short_name": res.skipped_short_name,
+            }
+
+        @app.get("/sources/{source_id}/stats", tags=["read"], dependencies=[Depends(check_auth)])
+        def source_stats_endpoint(source_id: str) -> dict[str, Any]:
+            """Per-source breakdown: file count, symbol counts by kind +
+            language, cross-repo same_as count, embedding count. Powers
+            the desktop Sources detail view."""
+            from collections import Counter
+            from memex.core.schema import EdgeKind, NodeKind
+            files: list[Any] = []
+            symbols: list[Any] = []
+            for c in engine.find_by_kind(NodeKind.file):
+                if c.metadata.get("source_id") == source_id:
+                    files.append(c)
+            for c in engine.find_by_kind(NodeKind.symbol):
+                if c.metadata.get("source_id") == source_id:
+                    symbols.append(c)
+            files_by_lang = Counter(f.metadata.get("language", "?") for f in files)
+            symbols_by_kind = Counter(s.metadata.get("symbol_kind", "?") for s in symbols)
+            symbols_by_lang = Counter(s.metadata.get("language", "?") for s in symbols)
+            # Cross-repo same_as — count outgoing same_as edges from
+            # symbols in this source to symbols in other sources.
+            sym_id_set = {s.id for s in symbols}
+            cross_links: dict[str, int] = {}
+            for s in symbols:
+                for e in engine.edges_for(s.id):
+                    if e.kind != EdgeKind.same_as:
+                        continue
+                    other = e.to_id if e.from_id == s.id else e.from_id
+                    if other in sym_id_set:
+                        continue
+                    other_concept = engine.get(other)
+                    if other_concept is None:
+                        continue
+                    other_src = other_concept.metadata.get("source_id")
+                    if other_src and other_src != source_id:
+                        cross_links[other_src] = cross_links.get(other_src, 0) + 1
+            return {
+                "source_id": source_id,
+                "files_total": len(files),
+                "symbols_total": len(symbols),
+                "files_by_language": dict(files_by_lang),
+                "symbols_by_kind": dict(symbols_by_kind),
+                "symbols_by_language": dict(symbols_by_lang),
+                "cross_repo_links": cross_links,
+            }
+
+        @app.post("/sources/{source_id}/reindex", tags=["write"], dependencies=[Depends(check_auth)])
+        def reindex_source_endpoint(source_id: str) -> dict[str, Any]:
+            from memex.codebase import reindex_source as _reindex_source
+            try:
+                res = _reindex_source(engine, source_id)
+            except Exception as e:  # noqa: BLE001
+                raise HTTPException(status_code=400, detail=str(e)) from None
+            return {
+                "source_id": source_id,
+                "files": res.files_indexed,
+                "symbols": res.symbols_indexed,
+                "languages": res.languages,
+                "skipped_files": res.skipped_files,
+            }
+
+        @app.delete("/sources/{source_id}", tags=["write"], dependencies=[Depends(check_auth)])
+        def remove_source_endpoint(source_id: str) -> dict[str, Any]:
+            from memex.codebase import remove_source as _remove_source
+            try:
+                deleted = _remove_source(engine, source_id)
+            except Exception as e:  # noqa: BLE001
+                raise HTTPException(status_code=400, detail=str(e)) from None
+            return {"source_id": source_id, "deleted_concepts": deleted}
+
         @app.delete("/nodes/{concept_id}", tags=["write"], dependencies=[Depends(check_auth)])
         def delete_node(concept_id: str) -> dict[str, Any]:
             """Hard-delete a concept and every edge touching it.
@@ -425,6 +610,43 @@ class HTTPFrontend:
             """Every edge touching a concept — both directions. Used by
             the graph view to expand a node's neighborhood."""
             edges = engine.edges_for(concept_id)
+            return {"edges": [e.model_dump(mode="json") for e in edges]}
+
+        @app.get("/edges-bulk", tags=["read"], dependencies=[Depends(check_auth)])
+        def edges_bulk(ids: str = "", limit: int = 5000) -> dict[str, Any]:
+            """All edges where from_id OR to_id is in the given comma-
+            separated id list. One round-trip instead of N — used by the
+            desktop Graph view so 500-node renders aren't 500 HTTP calls."""
+            wanted = {s.strip() for s in ids.split(",") if s.strip()}
+            if not wanted:
+                # No filter → all edges (capped). Cheap when caller wants
+                # the global graph.
+                conn = engine.semantic.conn
+                lock = engine.semantic._lock
+                with lock:
+                    rows = conn.execute(
+                        "SELECT from_id, to_id, kind, source, confidence, "
+                        "created_at, last_confirmed_at, metadata "
+                        "FROM edges LIMIT ?", [limit],
+                    ).fetchall()
+                from memex.core.stores.duckdb_store import _row_to_edge
+                edges = [_row_to_edge(r) for r in rows]
+            else:
+                placeholders = ",".join(["?"] * len(wanted))
+                wanted_list = list(wanted)
+                conn = engine.semantic.conn
+                lock = engine.semantic._lock
+                with lock:
+                    rows = conn.execute(
+                        f"SELECT from_id, to_id, kind, source, confidence, "
+                        f"created_at, last_confirmed_at, metadata "
+                        f"FROM edges WHERE from_id IN ({placeholders}) "
+                        f"   OR to_id IN ({placeholders}) "
+                        f"LIMIT ?",
+                        [*wanted_list, *wanted_list, limit],
+                    ).fetchall()
+                from memex.core.stores.duckdb_store import _row_to_edge
+                edges = [_row_to_edge(r) for r in rows]
             return {"edges": [e.model_dump(mode="json") for e in edges]}
 
         @app.get("/nodes/{concept_id}/history", tags=["read"], dependencies=[Depends(check_auth)])
