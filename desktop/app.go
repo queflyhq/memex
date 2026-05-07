@@ -432,6 +432,144 @@ func (a *App) ListCodeSources() (map[string]any, error) {
 	return out, nil
 }
 
+// EnableAFK turns on AFK auto-approve for `durationHours` with a `note`.
+func (a *App) EnableAFK(durationHours float64, note string) (map[string]any, error) {
+	body, _ := json.Marshal(map[string]any{
+		"duration_hours": durationHours, "note": note,
+	})
+	req, _ := http.NewRequestWithContext(a.ctx, "POST",
+		a.daemonURL+"/afk/on", bytesReader(body))
+	a.applyAuth(req)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := a.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	rb, _ := io.ReadAll(resp.Body)
+	var out map[string]any
+	_ = json.Unmarshal(rb, &out)
+	return out, nil
+}
+
+// DisableAFK turns off AFK mode.
+func (a *App) DisableAFK() (map[string]any, error) {
+	req, _ := http.NewRequestWithContext(a.ctx, "POST",
+		a.daemonURL+"/afk/off", nil)
+	a.applyAuth(req)
+	resp, err := a.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	rb, _ := io.ReadAll(resp.Body)
+	var out map[string]any
+	_ = json.Unmarshal(rb, &out)
+	return out, nil
+}
+
+// AFKStatus returns the active AFK flag, or {active:false}.
+func (a *App) AFKStatus() (map[string]any, error) {
+	body, _, err := a.daemonGet("/afk")
+	if err != nil {
+		return nil, err
+	}
+	var out map[string]any
+	_ = json.Unmarshal(body, &out)
+	return out, nil
+}
+
+// PatchNode edits a concept in place. Patch fields:
+// {name?, description?, kind?, confidence?, verification?, metadata_patch?}
+func (a *App) PatchNode(conceptID string, patch map[string]any) (map[string]any, error) {
+	body, _ := json.Marshal(patch)
+	req, _ := http.NewRequestWithContext(a.ctx, "PATCH",
+		a.daemonURL+"/nodes/"+conceptID, bytesReader(body))
+	a.applyAuth(req)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := a.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	rb, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		return map[string]any{"error": fmt.Sprintf("daemon %d: %s", resp.StatusCode, string(rb))}, nil
+	}
+	var out map[string]any
+	_ = json.Unmarshal(rb, &out)
+	return out, nil
+}
+
+// CreateConcept makes a new concept via POST /nodes.
+func (a *App) CreateConcept(name string, description string, kind string) (map[string]any, error) {
+	body, _ := json.Marshal(map[string]any{
+		"name": name, "description": description, "kind": kind,
+		"source": "human",
+	})
+	req, _ := http.NewRequestWithContext(a.ctx, "POST",
+		a.daemonURL+"/nodes", bytesReader(body))
+	a.applyAuth(req)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := a.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	rb, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		return map[string]any{"error": fmt.Sprintf("daemon %d: %s", resp.StatusCode, string(rb))}, nil
+	}
+	var out map[string]any
+	_ = json.Unmarshal(rb, &out)
+	return out, nil
+}
+
+// GetTaskComments fetches comments attached to a task.
+func (a *App) GetTaskComments(taskID string) (map[string]any, error) {
+	body, _, err := a.daemonGet("/tasks/" + taskID + "/comments")
+	if err != nil {
+		return nil, err
+	}
+	var out map[string]any
+	_ = json.Unmarshal(body, &out)
+	return out, nil
+}
+
+// AddTaskComment adds a comment / instruction to a task.
+func (a *App) AddTaskComment(taskID string, text string) (map[string]any, error) {
+	body, _ := json.Marshal(map[string]any{"text": text, "actor": "human"})
+	req, _ := http.NewRequestWithContext(a.ctx, "POST",
+		a.daemonURL+"/tasks/"+taskID+"/comments", bytesReader(body))
+	a.applyAuth(req)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := a.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	rb, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		return map[string]any{"error": string(rb)}, nil
+	}
+	var out map[string]any
+	_ = json.Unmarshal(rb, &out)
+	return out, nil
+}
+
+// FileSymbols lists every kind=symbol concept defined in a given file.
+func (a *App) FileSymbols(sourceID string, fileID string) (map[string]any, error) {
+	body, _, err := a.daemonGet(
+		fmt.Sprintf("/sources/%s/files/%s/symbols", sourceID, fileID),
+	)
+	if err != nil {
+		return nil, err
+	}
+	var out map[string]any
+	_ = json.Unmarshal(body, &out)
+	return out, nil
+}
+
 // ListSecretsViaDaemon hits /secrets — returns the index without values.
 func (a *App) ListSecretsViaDaemon() (map[string]any, error) {
 	body, _, err := a.daemonGet("/secrets")

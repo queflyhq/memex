@@ -39,6 +39,11 @@ class NodeKind(str, Enum):
     source = "source"  # a registered codebase / repo
     file = "file"      # a source file inside a registered source
     symbol = "symbol"  # a typed AST declaration: class|function|method|...
+    # Note — comment / instruction attached to a task (or any concept).
+    # `metadata.comment_on` carries the parent concept id; the node body
+    # is the comment text. Queryable via recall so an AI working on the
+    # task sees comments as LLM-readable instructions.
+    note = "note"
 
 
 class EdgeKind(str, Enum):

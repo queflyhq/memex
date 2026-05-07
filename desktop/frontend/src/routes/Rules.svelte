@@ -1,7 +1,119 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import {
+    EnableAFK,
+    DisableAFK,
+    AFKStatus,
+  } from "../../wailsjs/go/main/App.js";
 
   export let GetConcepts: (kind: string, limit: number, offset: number) => Promise<any>;
+
+  // AFK toggle state
+  let afk: any = null;
+  let afkBusy = false;
+  let durationHours = 4;
+  let note = "";
+
+  // Add-rule form state
+  let showAddRule = false;
+  let ruleType: "approval_approve" | "approval_deny" | "hard_deny" | "constraint" = "approval_approve";
+  let ruleToolPattern = "Bash";
+  let ruleArgsJson = '{"command": {"prefix": "git status"}}';
+  let ruleReason = "";
+  let ruleBusy = false;
+  let ruleError = "";
+  // Hardcoded placeholder for the args JSON textarea — kept as a JS
+  // string so Svelte's parser doesn't see the curly braces as expression
+  // delimiters in the placeholder attribute.
+  const argsPlaceholder = '{"command": {"prefix": "git status"}}';
+
+  async function submitRule() {
+    if (!ruleReason.trim() && ruleType !== "constraint") {
+      ruleError = "reason is required";
+      return;
+    }
+    ruleBusy = true;
+    ruleError = "";
+    try {
+      const { CreateConcept, PatchNode } = await import("../../wailsjs/go/main/App.js");
+      let kind: string;
+      let metadataPatch: Record<string, any> = {};
+      let name: string;
+
+      if (ruleType === "constraint") {
+        kind = "constraint";
+        name = ruleReason || "user constraint";
+      } else {
+        kind = "constraint";
+        let argsObj: any;
+        try {
+          argsObj = JSON.parse(ruleArgsJson || "{}");
+        } catch (e: any) {
+          ruleError = `invalid args JSON: ${e.message}`;
+          return;
+        }
+        const decision =
+          ruleType === "approval_approve" ? "approve"
+          : ruleType === "approval_deny"  ? "deny"
+          : "deny";
+        const policyType = ruleType === "hard_deny" ? "hard_deny" : "approval";
+        metadataPatch = {
+          policy_type: policyType,
+          tool_pattern: ruleToolPattern,
+          args_match: argsObj,
+          decision: decision,
+          reason: ruleReason,
+          enabled: true,
+          priority: 100,
+        };
+        name = `${decision}: ${ruleToolPattern} ${JSON.stringify(argsObj).slice(0, 40)}`;
+      }
+      const created = await CreateConcept(name, ruleReason, kind);
+      if (created?.error) { ruleError = created.error; return; }
+      if (Object.keys(metadataPatch).length) {
+        await PatchNode(created.id, { metadata_patch: metadataPatch });
+      }
+      showAddRule = false;
+      ruleReason = "";
+      await load();
+    } catch (e: any) {
+      ruleError = String(e?.message || e);
+    } finally {
+      ruleBusy = false;
+    }
+  }
+
+  async function refreshAfk() {
+    try {
+      afk = await AFKStatus();
+    } catch (e: any) {
+      // tolerate
+    }
+  }
+
+  async function turnOnAfk() {
+    afkBusy = true;
+    try {
+      await EnableAFK(durationHours, note);
+      await refreshAfk();
+    } catch (e: any) {
+      error = String(e?.message || e);
+    } finally {
+      afkBusy = false;
+    }
+  }
+
+  async function turnOffAfk() {
+    afkBusy = true;
+    try {
+      await DisableAFK();
+      await refreshAfk();
+    } catch (e: any) {
+      error = String(e?.message || e);
+    } finally {
+      afkBusy = false;
+    }
+  }
 
   let approvalPolicies: any[] = [];
   let hardDeny: any[] = [];
@@ -50,12 +162,15 @@
     return new Date(d).toLocaleString();
   }
 
-  onMount(() => load());
+  onMount(() => { load(); refreshAfk(); });
 </script>
 
 <header>
   <h1>Rules &amp; AFK</h1>
-  <button on:click={() => load()}>refresh</button>
+  <div class="header-actions">
+    <button class="primary" on:click={() => (showAddRule = true)}>+ Add rule</button>
+    <button on:click={() => { load(); refreshAfk(); }}>refresh</button>
+  </div>
 </header>
 
 {#if loading}
@@ -64,23 +179,46 @@
   <p class="error">error: {error}</p>
 {:else}
   <h2>AFK mode</h2>
-  {#if afkFlag}
+  {#if afk?.active && afk?.status}
     <div class="afk on">
-      <div class="afk-status">● AFK MODE ACTIVE</div>
-      <div class="afk-meta">
-        <span>started: {fmt(afkFlag.metadata?.started_at)}</span>
-        <span>expires: {fmt(afkFlag.metadata?.expires_at)}</span>
-        <span>duration: {afkFlag.metadata?.duration_hours}h</span>
+      <div class="afk-row">
+        <div class="afk-status">● AFK MODE ACTIVE</div>
+        <button class="off-btn" disabled={afkBusy} on:click={turnOffAfk}>
+          {afkBusy ? "..." : "Turn off"}
+        </button>
       </div>
-      {#if afkFlag.metadata?.note}
-        <div class="afk-note">note: {afkFlag.metadata.note}</div>
+      <div class="afk-meta">
+        <span>started: {fmt(afk.status.started_at)}</span>
+        <span>expires: {fmt(afk.status.expires_at)}</span>
+        <span>duration: {afk.status.duration_hours}h</span>
+      </div>
+      {#if afk.status.note}
+        <div class="afk-note">note: <em>{afk.status.note}</em></div>
       {/if}
+      <div class="muted small">
+        Auto-approves every PreToolUse-gated call EXCEPT hard-deny patterns.
+        Every approve/deny is audit-logged in the Activity tab.
+      </div>
     </div>
   {:else}
     <div class="afk off">
       <div class="afk-status">○ AFK mode is OFF</div>
-      <div class="muted">
-        Toggle on via CLI: <code>memex afk on --for 4h --note "executing plan X"</code>
+      <div class="muted small">
+        Turn on to delegate "work the plan unattended; I'll review on return."
+      </div>
+      <div class="afk-form">
+        <label>
+          duration (hours)
+          <input type="number" min="0.1" step="0.5" bind:value={durationHours} disabled={afkBusy}/>
+        </label>
+        <label class="grow">
+          note
+          <input type="text" placeholder="executing plan X — review on return"
+                 bind:value={note} disabled={afkBusy}/>
+        </label>
+        <button class="primary" disabled={afkBusy} on:click={turnOnAfk}>
+          {afkBusy ? "..." : "Turn on"}
+        </button>
       </div>
     </div>
   {/if}
@@ -160,6 +298,55 @@
   {/if}
 {/if}
 
+{#if showAddRule}
+  <div class="modal-bg" on:click={() => (showAddRule = false)} role="dialog">
+    <div class="modal" on:click|stopPropagation>
+      <h3>Add rule</h3>
+      <p class="muted small">
+        Approval policies + hard-deny patterns are consulted on every
+        PreToolUse hook fire. Constraints are recall-surfaced reminders
+        for the AI (not enforced).
+      </p>
+      <label>
+        Type
+        <select bind:value={ruleType}>
+          <option value="approval_approve">Auto-approve (PreToolUse)</option>
+          <option value="approval_deny">Auto-deny (PreToolUse)</option>
+          <option value="hard_deny">Hard-deny (bypasses AFK)</option>
+          <option value="constraint">Constraint (recall-only, not enforced)</option>
+        </select>
+      </label>
+      {#if ruleType !== "constraint"}
+        <label>
+          Tool pattern (regex)
+          <input type="text" placeholder="Bash | Edit|Write|MultiEdit | mcp__memex__*"
+                 bind:value={ruleToolPattern} disabled={ruleBusy} />
+        </label>
+        <label>
+          Args matcher (JSON)
+          <textarea rows="3" placeholder={argsPlaceholder}
+                    bind:value={ruleArgsJson} disabled={ruleBusy}></textarea>
+        </label>
+      {/if}
+      <label>
+        Reason / description
+        <textarea rows="2"
+                  placeholder="why this rule — surfaced when memex applies it"
+                  bind:value={ruleReason} disabled={ruleBusy}></textarea>
+      </label>
+      {#if ruleError}
+        <div class="form-error">{ruleError}</div>
+      {/if}
+      <div class="modal-actions">
+        <button on:click={() => (showAddRule = false)} disabled={ruleBusy}>cancel</button>
+        <button class="primary" disabled={ruleBusy} on:click={submitRule}>
+          {ruleBusy ? "saving…" : "save rule"}
+        </button>
+      </div>
+    </div>
+  </div>
+{/if}
+
 <style>
   header {
     display: flex;
@@ -231,17 +418,138 @@
   .afk.on .afk-status {
     color: #b45309;
   }
+  .afk-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
   .afk-meta {
     display: flex;
     gap: 12px;
     font-size: 11px;
     color: #57606a;
+    margin-top: 4px;
   }
   .afk-note {
     margin-top: 6px;
     font-size: 12px;
     color: #1f2328;
-    font-style: italic;
+  }
+  .afk-form {
+    display: flex;
+    align-items: flex-end;
+    gap: 8px;
+    margin-top: 10px;
+  }
+  .afk-form label {
+    display: flex;
+    flex-direction: column;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: #6b7280;
+    font-weight: 600;
+    flex-shrink: 0;
+  }
+  .afk-form label.grow {
+    flex: 1;
+  }
+  .afk-form input {
+    margin-top: 3px;
+    padding: 6px 9px;
+    border: 1px solid #d0d7de;
+    border-radius: 4px;
+    font-family: inherit;
+    font-size: 13px;
+  }
+  .afk-form input[type="number"] {
+    width: 80px;
+  }
+  .off-btn {
+    background: #ffffff;
+    border: 1px solid #d0d7de;
+    padding: 5px 12px;
+    border-radius: 5px;
+    font-size: 12px;
+    cursor: pointer;
+    font-family: inherit;
+  }
+  .off-btn:hover {
+    background: #fee2e2;
+    border-color: #fecaca;
+    color: #991b1b;
+  }
+  .header-actions {
+    display: flex;
+    gap: 8px;
+  }
+  button.primary {
+    background: #fef3c7;
+    border-color: #fde047;
+    font-weight: 600;
+  }
+  button.primary:hover:not(:disabled) {
+    background: #fde047;
+  }
+  /* modal */
+  .modal-bg {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.4);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 200;
+  }
+  .modal {
+    background: #ffffff;
+    border-radius: 10px;
+    padding: 22px 26px;
+    width: 480px;
+    max-height: 90vh;
+    overflow-y: auto;
+    box-shadow: 0 24px 60px rgba(0, 0, 0, 0.25);
+  }
+  .modal h3 {
+    margin: 0 0 8px;
+    font-family: "Plus Jakarta Sans", sans-serif;
+    font-weight: 700;
+    font-size: 16px;
+  }
+  .modal label {
+    display: block;
+    margin-top: 12px;
+    font-size: 11px;
+    text-transform: uppercase;
+    color: #6b7280;
+    font-weight: 600;
+    letter-spacing: 0.4px;
+  }
+  .modal input, .modal select, .modal textarea {
+    display: block;
+    width: 100%;
+    margin-top: 4px;
+    padding: 7px 10px;
+    border: 1px solid #d0d7de;
+    border-radius: 5px;
+    font-family: inherit;
+    font-size: 13px;
+  }
+  .modal textarea {
+    font-family: "Fira Code", monospace;
+    font-size: 12px;
+    resize: vertical;
+  }
+  .modal-actions {
+    display: flex;
+    gap: 8px;
+    justify-content: flex-end;
+    margin-top: 18px;
+  }
+  .form-error {
+    margin-top: 10px;
+    color: #dc2626;
+    font-size: 12px;
   }
 
   .rule-list {

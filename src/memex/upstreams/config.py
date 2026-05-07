@@ -91,6 +91,31 @@ class AuthConfig(BaseModel):
                 )
             return val
         if self.token_keychain:
+            # secret://provider/name → resolve via memex SecretsStore so
+            # AI-driven outbound calls can use any secret the user stored
+            # via the desktop Secrets page (or `memex secret put`). Loop
+            # closed: user saves secret in the GUI, AI uses it through
+            # the upstream gateway, value never enters memex's concept
+            # graph or episodic stream.
+            if self.token_keychain.startswith("secret://"):
+                from memex.config import get_settings
+                from memex.secrets import SecretsStore, parse_handle
+                from pathlib import Path
+                handle = parse_handle(self.token_keychain)
+                if handle is None:
+                    raise RuntimeError(
+                        f"invalid memex secret handle: {self.token_keychain}"
+                    )
+                store = SecretsStore(
+                    Path(str(get_settings().data_dir)) / "secrets"
+                )
+                try:
+                    return store.get(handle, actor="upstream")
+                except Exception as e:
+                    raise RuntimeError(
+                        f"memex secret {handle} could not be resolved: {e}"
+                    ) from e
+            # Legacy bare keychain key — predates memex's SecretsStore.
             try:
                 import keyring
             except ImportError as e:

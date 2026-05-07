@@ -656,6 +656,119 @@ class HTTPFrontend:
             removed = engine.delete(concept_id)
             return {"deleted": removed, "id": concept_id}
 
+        @app.patch("/nodes/{concept_id}", tags=["write"], dependencies=[Depends(check_auth)])
+        def patch_node(concept_id: str, body: dict[str, Any] = Body(...)) -> dict[str, Any]:
+            """Edit a concept in place. Body fields (all optional):
+              {name, description, kind, confidence, verification, metadata_patch}
+            metadata_patch is a shallow merge — pass {key: null} to remove a key.
+            History (concept_history) preserves the prior version."""
+            c = engine.get(concept_id)
+            if c is None:
+                raise HTTPException(status_code=404, detail="not found")
+            if "name" in body and body["name"]:
+                c.name = body["name"].strip()
+            if "description" in body:
+                c.description = body["description"] or ""
+            if "kind" in body and body["kind"]:
+                c.kind = NodeKind(body["kind"])
+            if "confidence" in body and body["confidence"] is not None:
+                c.confidence = max(0.0, min(1.0, float(body["confidence"])))
+            if "verification" in body:
+                c.verification = body["verification"]
+            if "metadata_patch" in body and isinstance(body["metadata_patch"], dict):
+                md = dict(c.metadata or {})
+                for k, v in body["metadata_patch"].items():
+                    if v is None:
+                        md.pop(k, None)
+                    else:
+                        md[k] = v
+                c.metadata = md
+            from datetime import datetime as _dt, timezone as _tz
+            c.last_confirmed_at = _dt.now(_tz.utc)
+            engine.put(c)
+            return c.model_dump(mode="json")
+
+        @app.get("/afk", tags=["enforcement"], dependencies=[Depends(check_auth)])
+        def afk_get() -> dict[str, Any]:
+            from memex.enforcement import afk_status
+            st = afk_status(engine)
+            return {"active": st is not None, "status": st}
+
+        @app.post("/afk/on", tags=["enforcement"], dependencies=[Depends(check_auth)])
+        def afk_on(body: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+            """Enable AFK mode. Body: {duration_hours: float = 4, note: str = ""}.
+            Auto-approves every PreToolUse-gated call EXCEPT hard-deny patterns.
+            Time-boxed; auto-expires after duration_hours."""
+            from memex.enforcement import enable_afk_mode
+            duration_hours = float(body.get("duration_hours") or 4.0)
+            note = str(body.get("note") or "")
+            flag = enable_afk_mode(engine, duration_hours=duration_hours, note=note)
+            return {
+                "id": flag.id,
+                "expires_at": flag.metadata.get("expires_at"),
+                "started_at": flag.metadata.get("started_at"),
+                "duration_hours": flag.metadata.get("duration_hours"),
+                "note": flag.metadata.get("note"),
+            }
+
+        @app.post("/afk/off", tags=["enforcement"], dependencies=[Depends(check_auth)])
+        def afk_off() -> dict[str, Any]:
+            from memex.enforcement import disable_afk_mode
+            return {"disabled": disable_afk_mode(engine)}
+
+        @app.get("/tasks/{task_id}/comments", tags=["tasks"], dependencies=[Depends(check_auth)])
+        def task_comments_get(task_id: str) -> dict[str, Any]:
+            """Comments / instructions attached to a task. Each comment is
+            a kind=note concept with metadata.comment_on=task_id. Returned
+            in chronological order so the AI reads them as a thread."""
+            comments = []
+            for c in engine.find_by_kind(NodeKind.note):
+                if (c.metadata or {}).get("comment_on") == task_id:
+                    comments.append(c.model_dump(mode="json"))
+            comments.sort(key=lambda c: c.get("created_at", ""))
+            return {"task_id": task_id, "comments": comments}
+
+        @app.post("/tasks/{task_id}/comments", tags=["tasks"], dependencies=[Depends(check_auth)])
+        def task_comments_post(task_id: str, body: dict[str, Any] = Body(...)) -> dict[str, Any]:
+            """Add a comment / instruction to a task. Body: {text, actor?='human'}.
+            Persists as kind=note linked to the task via comment_on metadata
+            AND a `relates_to` edge so cross-cutting graph walks find it."""
+            text = body.get("text", "").strip()
+            actor = body.get("actor", "human")
+            if not text:
+                raise HTTPException(status_code=400, detail="text required")
+            target = engine.get(task_id)
+            if target is None:
+                raise HTTPException(status_code=404, detail="task not found")
+            c = engine.add(
+                name=f"comment on {target.name[:60]}",
+                description=text,
+                kind=NodeKind.note,
+                source=Source(actor),
+                metadata={"comment_on": task_id, "task_name": target.name},
+            )
+            engine.link(
+                from_id=c.id, to_id=task_id,
+                kind=EdgeKind.relates_to, source=Source(actor),
+            )
+            engine.observe(
+                kind="comment_added", actor=Source(actor),
+                payload={"comment_id": c.id, "task_id": task_id,
+                         "text_len": len(text)},
+            )
+            return c.model_dump(mode="json")
+
+        @app.get("/sources/{source_id}/files/{file_id}/symbols", tags=["read"], dependencies=[Depends(check_auth)])
+        def file_symbols(source_id: str, file_id: str) -> dict[str, Any]:
+            """Symbols defined in one file — for the Sources file-drilldown."""
+            from memex.core.schema import NodeKind as _NK
+            symbols = []
+            for c in engine.find_by_kind(_NK.symbol):
+                if c.metadata.get("file_id") == file_id:
+                    symbols.append(c.model_dump(mode="json"))
+            symbols.sort(key=lambda s: s.get("metadata", {}).get("start_line", 0))
+            return {"file_id": file_id, "source_id": source_id, "symbols": symbols}
+
         @app.post("/edges", tags=["write"], dependencies=[Depends(check_auth)])
         def add_edge(body: AddEdgeBody = Body(...)) -> dict[str, str]:
             engine.link(**body.model_dump())
