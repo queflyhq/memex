@@ -81,7 +81,7 @@
   // ----- derived metrics -----
   $: imp = stats?.impact ?? {};
   $: prevented = (imp.auto_denies ?? 0) + (imp.secrets_redacted ?? 0);
-  $: helped = (imp.auto_approvals ?? 0) + (imp.tool_calls_observed ?? 0);
+  $: helped = (imp.auto_approvals ?? 0) + (imp.tool_calls_observed ?? 0) + (imp.recalls ?? 0);
   $: learned = (imp.user_corrections ?? 0);
   $: anyImpact = prevented + helped + learned + (imp.files_reindexed ?? 0) > 0;
 
@@ -116,6 +116,34 @@
     if (kind === "auto_approval" || kind === "afk_enabled") return "#16a34a";
     if (kind === "secret_redacted") return "#b45309";
     if (kind === "user_correction") return "#7c3aed";
+    return "#57606a";
+  }
+
+  // Concept-kind family palette — keeps related kinds visually grouped:
+  // code (symbol/file/module), knowledge (fact/decision/constraint),
+  // work (task/project/milestone), people (person/agent), other.
+  function kindColor(kind: string): string {
+    const k = (kind || "").toLowerCase();
+    if (k === "symbol" || k === "file" || k === "module" || k === "source")
+      return "#1d4ed8"; // code → blue
+    if (k === "fact" || k === "decision" || k === "constraint" || k === "approach" || k === "note")
+      return "#7c3aed"; // knowledge → purple
+    if (k === "task" || k === "project" || k === "milestone")
+      return "#0d9488"; // work → teal
+    if (k === "person")
+      return "#b45309"; // people → amber
+    return "#57606a"; // other → grey
+  }
+
+  // Actor palette — same family map. agent = the AI; claude_code = the
+  // hook; skill = installed skills; human = the user.
+  function actorColor(actor: string): string {
+    const a = (actor || "").toLowerCase();
+    if (a === "agent") return "#1d4ed8";
+    if (a === "claude_code" || a === "hook") return "#0d9488";
+    if (a === "skill") return "#7c3aed";
+    if (a === "human") return "#b45309";
+    if (a === "extractor") return "#0891b2";
     return "#57606a";
   }
 
@@ -199,6 +227,9 @@
         memex saved you
         <strong class="num-emph">{fmt(imp.auto_approvals)}</strong>
         prompt{imp.auto_approvals === 1 ? "" : "s"},
+        served
+        <strong class="num-emph">{fmt(imp.recalls)}</strong>
+        recall{imp.recalls === 1 ? "" : "s"},
         blocked
         <strong class="num-emph">{fmt(imp.auto_denies)}</strong>
         dangerous call{imp.auto_denies === 1 ? "" : "s"}, captured
@@ -361,14 +392,24 @@
 
   {#if stats.concepts_by_kind && Object.keys(stats.concepts_by_kind).length}
     <h2 class="section-h">Concepts by kind</h2>
-    <div class="bars">
+    <!-- sqrt-sized chip cloud — heavy skew (6k symbols vs 1 person)
+         crushes a linear bar chart. sqrt keeps the long tail readable
+         while preserving rank. Tile color comes from the kind family. -->
+    <div class="chip-cloud">
       {#each fmtKindMap(stats.concepts_by_kind) as [k, v]}
-        <div class="bar-row">
-          <span class="bar-label">{k}</span>
-          <span class="bar-track">
-            <span class="bar-fill" style="width: {(v / maxv(stats.concepts_by_kind)) * 100}%"></span>
-          </span>
-          <span class="bar-value">{fmt(v)}</span>
+        {@const ratio = Math.sqrt(v) / Math.sqrt(maxv(stats.concepts_by_kind))}
+        <div
+          class="chip"
+          style="
+            font-size: {Math.max(11, 11 + ratio * 14)}px;
+            background: {kindColor(k)}1A;
+            border-color: {kindColor(k)}55;
+            color: {kindColor(k)};
+          "
+          title="{k}: {fmt(v)}"
+        >
+          <span class="chip-name">{k}</span>
+          <span class="chip-num">{fmt(v)}</span>
         </div>
       {/each}
     </div>
@@ -376,14 +417,28 @@
 
   {#if actorRows.length}
     <h2 class="section-h">Which AI tools used memex</h2>
-    <div class="actor-list">
+    <!-- Single 100% stacked bar — far better than per-row bars when
+         one actor (agent ~33k) dwarfs the rest. Tooltip + legend show
+         the absolute counts. -->
+    {@const actorTotal = actorRows.reduce((acc, r) => acc + r.total, 0)}
+    <div class="stacked-bar">
+      {#each actorRows as ar, i}
+        {@const pct = actorTotal > 0 ? (ar.total / actorTotal) * 100 : 0}
+        <div
+          class="stacked-seg"
+          style="width: {pct}%; background: {actorColor(ar.actor)};"
+          title="{ar.actor}: {fmt(ar.total)} ({pct.toFixed(1)}%)"
+        >
+          {#if pct > 6}<span class="seg-label">{ar.actor}</span>{/if}
+        </div>
+      {/each}
+    </div>
+    <div class="stacked-legend">
       {#each actorRows as ar}
-        <div class="actor-row">
-          <span class="actor-name">{ar.actor}</span>
-          <span class="actor-bar">
-            <span class="actor-fill" style="width: {(ar.total / maxv(Object.fromEntries(actorRows.map(r => [r.actor, r.total])))) * 100}%"></span>
-          </span>
-          <span class="actor-num">{fmt(ar.total)}</span>
+        <div class="legend-item">
+          <span class="legend-dot" style="background: {actorColor(ar.actor)}"></span>
+          <span class="legend-name">{ar.actor}</span>
+          <span class="legend-num">{fmt(ar.total)}</span>
         </div>
       {/each}
     </div>
@@ -705,68 +760,89 @@
     margin-top: 1px;
   }
 
-  .bars {
+  /* sqrt-sized chip cloud — replaces the old per-row horizontal bars
+     for "Concepts by kind". Family-coloured, sized so 6,295 symbols
+     and 1 person both stay readable. */
+  .chip-cloud {
     display: flex;
-    flex-direction: column;
-    gap: 5px;
-  }
-  .bar-row {
-    display: grid;
-    grid-template-columns: 140px 1fr 60px;
+    flex-wrap: wrap;
+    gap: 8px;
     align-items: center;
-    gap: 12px;
-    font-size: 12px;
   }
-  .bar-label {
-    color: #1f2328;
+  .chip {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 6px;
+    padding: 6px 10px;
+    border-radius: 999px;
+    border: 1px solid;
+    line-height: 1.1;
+    font-weight: 500;
+    transition: transform 60ms ease;
   }
-  .bar-track {
-    background: #f3f4f6;
-    height: 8px;
-    border-radius: 4px;
-    overflow: hidden;
+  .chip:hover { transform: translateY(-1px); }
+  .chip-name {
+    text-transform: lowercase;
+    letter-spacing: -0.005em;
   }
-  .bar-fill {
-    background: #fbbf24;
-    height: 100%;
-    display: block;
-  }
-  .bar-value {
-    color: #6b7280;
-    text-align: right;
+  .chip-num {
     font-variant-numeric: tabular-nums;
+    font-weight: 700;
+    opacity: 0.85;
+    font-size: 0.9em;
   }
 
-  .actor-list {
+  /* Single 100% stacked bar for "Which AI tools used memex" — when
+     one actor has 33k events and the next has 226 the per-row bar
+     just becomes "one full + three invisible". The stacked share is
+     the right read. */
+  .stacked-bar {
     display: flex;
-    flex-direction: column;
-    gap: 5px;
+    width: 100%;
+    height: 28px;
+    border-radius: 6px;
+    overflow: hidden;
+    background: #f3f4f6;
   }
-  .actor-row {
-    display: grid;
-    grid-template-columns: 140px 1fr 60px;
+  .stacked-seg {
+    height: 100%;
+    display: flex;
     align-items: center;
-    gap: 12px;
+    justify-content: center;
+    color: white;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.01em;
+    overflow: hidden;
+    white-space: nowrap;
+    transition: filter 80ms ease;
+  }
+  .stacked-seg:hover { filter: brightness(1.05); }
+  .seg-label {
+    padding: 0 8px;
+    text-shadow: 0 1px 0 rgba(0,0,0,0.15);
+  }
+  .stacked-legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 14px;
+    margin-top: 10px;
     font-size: 12px;
   }
-  .actor-name {
-    color: #1f2328;
-    font-weight: 500;
+  .legend-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
   }
-  .actor-bar {
-    background: #f3f4f6;
-    height: 8px;
-    border-radius: 4px;
-    overflow: hidden;
+  .legend-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 2px;
+    display: inline-block;
   }
-  .actor-fill {
-    background: #1f2328;
-    height: 100%;
-    display: block;
-  }
-  .actor-num {
+  .legend-name { color: #1f2328; font-weight: 500; }
+  .legend-num {
     color: #6b7280;
-    text-align: right;
     font-variant-numeric: tabular-nums;
   }
 

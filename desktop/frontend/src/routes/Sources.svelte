@@ -7,6 +7,7 @@
     FileSymbols,
     SourceStats,
     LinkCrossRepo,
+    GetNodeNeighborhood,
   } from "../../wailsjs/go/main/App.js";
 
   let sourceStats: any = null;
@@ -129,6 +130,11 @@
   let activeFiles: any[] = [];
   let filesLoading = false;
 
+  // The source's own memory neighborhood — every concept/decision/
+  // task/fact that has been linked to this codebase. This is what
+  // makes Sources feel like memory, not a file picker.
+  let sourceContext: any = null;
+
   function langCount(src: any): [string, number][] {
     const langs = src.metadata?.languages_breakdown ?? {};
     return Object.entries(langs as Record<string, number>).sort(
@@ -185,8 +191,16 @@
     activeFile = null;
     activeSymbol = null;
     fileSymbols = [];
+    sourceContext = null;
+    fileContext = null;
+    symbolContext = null;
     filesLoading = true;
     loadSourceStats(src.id);
+    // Source neighborhood — runs in parallel with file load so the
+    // "memory neighborhood" panel populates as soon as it's ready.
+    GetNodeNeighborhood(src.id)
+      .then((ctx) => { sourceContext = ctx; })
+      .catch(() => {});
     try {
       // Build a quick lookup of all sources by id so cross-repo chips can
       // resolve target ids → names.
@@ -202,6 +216,47 @@
       filesLoading = false;
     }
   }
+
+  // Filter neighborhood concepts down to "memory" kinds — decisions,
+  // constraints, facts, tasks, approaches, notes. Excludes file/symbol/
+  // source so the panel shows the WHY around the codebase rather than
+  // duplicating the file tree.
+  function memoryNeighbors(ctx: any): any[] {
+    if (!ctx?.neighbors) return [];
+    const memoryKinds = new Set([
+      "decision", "constraint", "fact", "task",
+      "approach", "note", "project", "milestone",
+    ]);
+    return ctx.neighbors.filter((n: any) => memoryKinds.has(n.kind));
+  }
+  function neighborColor(kind: string): string {
+    if (kind === "decision") return "#1d4ed8";
+    if (kind === "constraint") return "#dc2626";
+    if (kind === "fact") return "#7c3aed";
+    if (kind === "task") return "#0d9488";
+    if (kind === "approach") return "#b45309";
+    if (kind === "note") return "#0891b2";
+    if (kind === "project" || kind === "milestone") return "#16a34a";
+    return "#57606a";
+  }
+
+  // Derived: every edge from the active symbol to a symbol in a
+  // DIFFERENT indexed source. Built here (not inline) because Svelte's
+  // {@const} doesn't accept multi-line arrow chains with .map/.filter.
+  $: xEdges = (() => {
+    if (!symbolContext?.edges?.length || !activeSymbol || !activeSource) return [];
+    const out: any[] = [];
+    for (const e of symbolContext.edges) {
+      const otherId = e.from_id === activeSymbol.id ? e.to_id : e.from_id;
+      const direction = e.from_id === activeSymbol.id ? "out" : "in";
+      const other = (symbolContext.neighbors || []).find((n: any) => n.id === otherId);
+      const otherSrc = other?.metadata?.source_id;
+      if (other && otherSrc && otherSrc !== activeSource.id) {
+        out.push({ edge: e, other, direction, otherSrc });
+      }
+    }
+    return out;
+  })();
 
   function fmt(d: string): string {
     if (!d) return "—";
@@ -322,6 +377,41 @@
           </div>
         {/if}
 
+        <!-- Memory neighborhood — the WHY around this codebase. Shows
+             every typed concept (decision / constraint / task / fact /
+             approach / note / project) that has been linked to this
+             source. Makes the page feel like memex memory, not a flat
+             file tree. -->
+        {#if sourceContext}
+          {@const memNeighbors = memoryNeighbors(sourceContext)}
+          {#if memNeighbors.length > 0}
+            <h3>Memory linked to this codebase</h3>
+            <div class="muted small">
+              Decisions, constraints, tasks and facts wired to this repo via memex edges.
+            </div>
+            <div class="memory-grid">
+              {#each memNeighbors as n (n.id)}
+                <div class="mem-card" style="border-left: 3px solid {neighborColor(n.kind)}">
+                  <div class="mem-head">
+                    <span class="mem-kind" style="color: {neighborColor(n.kind)}">{n.kind}</span>
+                    <span class="mem-name">{n.name}</span>
+                  </div>
+                  {#if n.description}
+                    <div class="mem-desc">{n.description.slice(0, 240)}{n.description.length > 240 ? "…" : ""}</div>
+                  {/if}
+                </div>
+              {/each}
+            </div>
+          {:else}
+            <h3>Memory linked to this codebase</h3>
+            <div class="empty-mem muted small">
+              No decisions, constraints or tasks are linked to this codebase yet.
+              Link concepts to it via the cross-repo linker, MCP, or the CLI to build out its
+              memory surface.
+            </div>
+          {/if}
+        {/if}
+
         {#if filesByLang.length > 0}
           <h3>Languages</h3>
           <div class="lang-row">
@@ -425,6 +515,34 @@
                   <h4>Body (preview)</h4>
                   <pre class="body">{activeSymbol.metadata.body}</pre>
                 {/if}
+
+                <!-- Cross-repo edges — every typed edge from THIS symbol
+                     to a symbol in a DIFFERENT source. Same_as, calls,
+                     imports, extends. Renders the neighbor's repo name
+                     so you can see the cross-repo connection at a glance. -->
+                {#if xEdges.length}
+                  <h4>Cross-repo edges ({xEdges.length})</h4>
+                  <div class="muted small">
+                    Typed connections from this symbol to symbols in other indexed codebases.
+                  </div>
+                  <div class="xedge-list">
+                    {#each xEdges as x}
+                      {@const repo = sourceById[x.otherSrc]}
+                      <div class="xedge-row">
+                        <span class="xedge-kind" style="background: {neighborColor(x.other.kind)}1A; color: {neighborColor(x.other.kind)}">
+                          {x.edge.kind}
+                        </span>
+                        <span class="xedge-arrow">{x.direction === "out" ? "→" : "←"}</span>
+                        <span class="xedge-repo" title="repo">{repo?.name ?? x.otherSrc.slice(0, 10)}</span>
+                        <span class="xedge-sep">::</span>
+                        <span class="xedge-sym" title={x.other.name}>{x.other.name}</span>
+                        {#if x.other.metadata?.symbol_kind}
+                          <span class="xedge-symkind">{x.other.metadata.symbol_kind}</span>
+                        {/if}
+                      </div>
+                    {/each}
+                  </div>
+                {/if}
                 <div class="muted small">id: <code>{activeSymbol.id}</code></div>
               {/if}
             </div>
@@ -523,6 +641,93 @@
     margin-bottom: 16px;
     max-height: 200px;
     overflow-y: auto;
+  }
+
+  /* Memory neighborhood — concept cards linked to the source. */
+  .memory-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+    gap: 10px;
+    margin-top: 6px;
+  }
+  .mem-card {
+    background: #fafbfc;
+    border: 1px solid #e6e8eb;
+    border-radius: 6px;
+    padding: 10px 12px;
+  }
+  .mem-head {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    margin-bottom: 4px;
+  }
+  .mem-kind {
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.4px;
+    text-transform: uppercase;
+  }
+  .mem-name {
+    font-size: 12px;
+    font-weight: 600;
+    color: #1f2328;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .mem-desc {
+    font-size: 11px;
+    color: #57606a;
+    line-height: 1.4;
+  }
+  .empty-mem {
+    padding: 10px 12px;
+    background: #fafbfc;
+    border: 1px dashed #e6e8eb;
+    border-radius: 6px;
+  }
+
+  /* Cross-repo edges per symbol — calls/imports/extends/same_as that
+     reach across an indexed-source boundary. */
+  .xedge-list {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-top: 4px;
+    font-family: "Fira Code", "Consolas", monospace;
+    font-size: 11px;
+  }
+  .xedge-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 6px;
+    border-radius: 4px;
+  }
+  .xedge-row:hover { background: #f3f4f6; }
+  .xedge-kind {
+    padding: 1px 6px;
+    border-radius: 3px;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.3px;
+    text-transform: uppercase;
+  }
+  .xedge-arrow { color: #6b7280; }
+  .xedge-repo { color: #1d4ed8; font-weight: 600; }
+  .xedge-sep { color: #6b7280; }
+  .xedge-sym {
+    color: #1f2328;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 220px;
+  }
+  .xedge-symkind {
+    color: #6b7280;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
   }
   .layout {
     display: grid;
