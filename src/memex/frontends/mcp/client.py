@@ -138,6 +138,65 @@ class MemexClient:
         r.raise_for_status()
         return Concept.model_validate(r.json())
 
+    def find_by_kind(self, kind: NodeKind | str) -> list[Concept]:
+        """List every concept of a given kind. Mirrors Engine.find_by_kind so
+        codebase memory + enforcement modules work in daemon-passthrough mode."""
+        r = self._http.get(
+            "/concepts",
+            params={"kind": _enum_value(kind, NodeKind), "limit": 10000},
+        )
+        r.raise_for_status()
+        return [Concept.model_validate(c) for c in r.json().get("concepts", [])]
+
+    def edges_for(self, concept_id: str) -> list[Edge]:
+        """Every edge touching a concept (outgoing + incoming)."""
+        r = self._http.get(f"/edges/{concept_id}")
+        r.raise_for_status()
+        return [Edge.model_validate(e) for e in r.json().get("edges", [])]
+
+    # ---- mutations -----------------------------------------------------
+
+    def put(self, c: Concept) -> Concept:
+        """Upsert a concept by PATCH-ing every editable field. Mirrors
+        Engine.put for daemon-passthrough callers (sources.mark_indexed,
+        indexer reindex, etc.)."""
+        body = {
+            "name": c.name,
+            "description": c.description,
+            "kind": _enum_value(c.kind, NodeKind),
+            "confidence": c.confidence,
+            "verification": c.verification,
+            # Replace metadata wholesale: pass current keys, then null-out keys
+            # that exist in the stored copy but not the new one. Simpler path:
+            # send a metadata_patch that fully overlays new keys (server keeps
+            # any old keys we don't mention — acceptable for our callers since
+            # they always read-modify-write the full dict).
+            "metadata_patch": dict(c.metadata or {}),
+        }
+        r = self._http.patch(f"/nodes/{c.id}", json=body)
+        if r.status_code == 404:
+            # Concept doesn't exist on server — fall back to add() so callers
+            # treating put as upsert still work.
+            return self.add(
+                name=c.name,
+                description=c.description,
+                kind=c.kind,
+                source=c.source,
+                confidence=c.confidence,
+                verification=c.verification,
+                metadata=c.metadata,
+            )
+        r.raise_for_status()
+        return Concept.model_validate(r.json())
+
+    def delete(self, concept_id: str) -> bool:
+        """Hard-delete a concept and every edge touching it."""
+        r = self._http.delete(f"/nodes/{concept_id}")
+        if r.status_code == 404:
+            return False
+        r.raise_for_status()
+        return bool(r.json().get("deleted", False))
+
     def recall(
         self,
         query: str,

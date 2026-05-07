@@ -258,6 +258,20 @@ def _compute_stats(
         "afk_sessions": events_by_kind.get("afk_enabled", 0),
         "comments_added": events_by_kind.get("comment_added", 0),
         "turns_observed": events_by_kind.get("turn_end", 0),
+        # Recall + write activity — closes the "what did memex actually do
+        # for me" loop on the dashboard. Recalls = how often AI asked memex.
+        "recalls": events_by_kind.get("recall_executed", 0),
+        "concepts_added": events_by_kind.get("concept_added", 0),
+        "concepts_deleted": events_by_kind.get("concept_deleted", 0),
+        "edges_added": events_by_kind.get("edge_added", 0),
+        "skills_validated": events_by_kind.get("skill_validated", 0),
+        "skills_installed": events_by_kind.get("skill_installed", 0),
+        "policies_changed": (
+            events_by_kind.get("policy_added", 0)
+            + events_by_kind.get("policy_removed", 0)
+        ),
+        "sources_indexed": events_by_kind.get("source_indexed", 0),
+        "consolidations": events_by_kind.get("consolidation_run", 0),
     }
 
     # Per-actor by-kind breakdown — also via SQL for volume safety.

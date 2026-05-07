@@ -244,9 +244,14 @@
           <div class="metric-hint">auto-approve via stored policies</div>
         </div>
         <div class="metric">
+          <div class="metric-num blue">{fmt(imp.recalls)}</div>
+          <div class="metric-label">recalls served</div>
+          <div class="metric-hint">times AI asked memex for context</div>
+        </div>
+        <div class="metric">
           <div class="metric-num purple">{fmt(imp.user_corrections)}</div>
           <div class="metric-label">corrections captured</div>
-          <div class="metric-hint">rules that survive across sessions</div>
+          <div class="metric-hint">rules that survive across sessions · explicit observe(user_correction)</div>
         </div>
       </div>
     </section>
@@ -265,8 +270,39 @@
           <div class="metric-label">files re-indexed on edit</div>
           <div class="metric-hint">typed graph kept current</div>
         </div>
+        <div class="metric">
+          <div class="metric-num">{fmt(imp.consolidations)}</div>
+          <div class="metric-label">consolidations</div>
+          <div class="metric-hint">sleep-cycle summaries written</div>
+        </div>
       </div>
     </section>
+  </div>
+
+  <!-- Activity & growth — surfaces every other event-kind status the user
+       asked about (recalls, writes, skill validations, policy changes). -->
+  <h2 class="section-h">Activity & growth</h2>
+  <div class="mem-grid">
+    <div class="mem-tile">
+      <div class="mem-num">{fmt(imp.concepts_added)}</div>
+      <div class="mem-label">concepts added</div>
+      <div class="mem-hint">typed nodes written</div>
+    </div>
+    <div class="mem-tile">
+      <div class="mem-num">{fmt(imp.edges_added)}</div>
+      <div class="mem-label">edges added</div>
+      <div class="mem-hint">typed relations</div>
+    </div>
+    <div class="mem-tile">
+      <div class="mem-num">{fmt(imp.skills_validated)}</div>
+      <div class="mem-label">skills validated</div>
+      <div class="mem-hint">{fmt(imp.skills_installed)} installed</div>
+    </div>
+    <div class="mem-tile">
+      <div class="mem-num">{fmt(imp.policies_changed)}</div>
+      <div class="mem-label">policies changed</div>
+      <div class="mem-hint">{fmt(imp.sources_indexed)} sources indexed</div>
+    </div>
   </div>
 
   <h2 class="section-h">Memory at a glance</h2>
@@ -551,6 +587,7 @@
   .metric-num.amber { color: #b45309; }
   .metric-num.green { color: #16a34a; }
   .metric-num.purple { color: #7c3aed; }
+  .metric-num.blue { color: #1d4ed8; }
   .metric-label {
     font-size: 12px;
     color: #1f2328;
