@@ -1,7 +1,7 @@
 [project]
 name = "memex"
-version = "0.1.0"
-description = "Persistent cognitive memory for AI coding tools. Local-first, MCP-native, ships with curated knowledge packs."
+version = "0.6.0.dev0"
+description = "Centralized agentic memory for any LLM/agent. MCP gateway + persistent graph + skill validation. Local-first, ships with a curated catalog of upstream MCP servers."
 readme = "README.md"
 license = { file = "LICENSE" }
 authors = [{ name = "Quefly", email = "team@quefly.com" }]
@@ -31,7 +31,7 @@ classifiers = [
 ]
 
 dependencies = [
-    "kuzu>=0.4",
+    "duckdb>=1.0",
     "mcp>=1.0",
     "fastapi>=0.110",
     "uvicorn[standard]>=0.27",
@@ -43,6 +43,7 @@ dependencies = [
     "platformdirs>=4.2",
     "rank-bm25>=0.2.2",
     "numpy>=1.26",
+    "fastembed>=0.3",
 ]
 
 [project.optional-dependencies]
@@ -74,6 +75,7 @@ include = [
     "src/memex/**/*.py",
     "src/memex/**/*.json",
     "src/memex/**/*.jsonl",
+    "src/memex/**/*.svg",
 ]
 
 [tool.hatch.build.targets.sdist]

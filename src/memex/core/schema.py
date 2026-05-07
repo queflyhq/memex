@@ -28,6 +28,12 @@ class NodeKind(str, Enum):
     question = "question"
     rejected = "rejected"
     approach = "approach"  # validation entry: carries `checks` list in metadata
+    # Project-management primitives — workflow state lives in `metadata.status`
+    # (pending|in_progress|completed|blocked|cancelled) so we don't need new
+    # schema columns. `confidence` doubles as completion certainty (1.0 = done).
+    task = "task"
+    milestone = "milestone"
+    project = "project"
 
 
 class EdgeKind(str, Enum):
@@ -40,6 +46,10 @@ class EdgeKind(str, Enum):
     same_as = "same_as"
     relates_to = "relates_to"
     calls = "calls"
+    # PM edges — wire tasks to projects/milestones and to each other.
+    blocks = "blocks"              # task A blocks task B
+    part_of = "part_of"            # task is part of milestone is part of project
+    spawned_from = "spawned_from"  # task created from an episodic event
 
 
 class Source(str, Enum):
@@ -117,12 +127,21 @@ class EpisodicEvent(BaseModel):
 
 
 class RecallResult(BaseModel):
-    """Subgraph returned by a `recall` call, bounded by token budget."""
+    """Subgraph returned by a `recall` call, bounded by token budget.
+
+    `degraded` is True when retrieval ran without semantic vectors (e.g.
+    embed tier missing or vector store empty). Agents should treat
+    degraded results as lexical-only and consider re-asking with
+    different phrasing rather than trusting completeness. `degraded_reason`
+    carries a short human-readable explanation when degraded.
+    """
 
     nodes: list[Concept]
     edges: list[Edge]
     tokens_used: int = 0
     strategy: str = "bm25"
+    degraded: bool = False
+    degraded_reason: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -130,4 +149,6 @@ class RecallResult(BaseModel):
             "edges": [e.model_dump(mode="json") for e in self.edges],
             "tokens_used": self.tokens_used,
             "strategy": self.strategy,
+            "degraded": self.degraded,
+            "degraded_reason": self.degraded_reason,
         }

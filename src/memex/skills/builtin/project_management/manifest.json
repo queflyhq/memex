@@ -1,0 +1,9 @@
+{
+  "name": "project-management",
+  "version": "0.1.0",
+  "description": "Lightweight PM doctrine for AI agents working on multi-step tasks: decomposition, blocked-task hygiene, definition-of-done, weekly review. Uses memex's task/milestone/project node kinds.",
+  "license": "MIT",
+  "homepage": "https://github.com/queflyhq/memex",
+  "min_memex": "0.1.0",
+  "scope": "global:project-management"
+}

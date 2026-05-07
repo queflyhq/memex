@@ -4,8 +4,8 @@
 
 # memex
 
-**Persistent cognitive memory for AI coding tools.**
-Your AI coding tool has amnesia. memex fixes that. Local-first, MCP-native, ships with curated **skills** that any AI can install and validate against.
+**Centralized agentic memory for any LLM or AI agent.**
+Your AI agent has amnesia. memex fixes it — and now also acts as an **MCP gateway**, so any tool the agent calls is automatically captured into memory. One MCP connection, two tool families: memex's native memory tools plus every upstream MCP server you connect (filesystem, github, slack, linear, postgres, …). Local-first, MCP-native, ships with curated **skills** the AI can validate against.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
@@ -82,6 +82,75 @@ That's it. Claude Code can now `recall`, `validate`, `observe`, and `add` agains
 | Any HTTP-capable client | [docs/editors/http.md](docs/editors/http.md) |
 | Docker daemon | [docs/editors/docker.md](docs/editors/docker.md) |
 
+## MCP gateway (v0.6)
+
+memex doesn't just remember — it can be the *single MCP connection* your AI agent needs. It re-exports tools from upstream MCP servers (the ones you own) alongside its native memory tools, and **auto-captures every call** so memex's perception layer fills without the agent having to remember anything.
+
+```bash
+# 1. Browse the curated catalog of popular MCPs
+memex upstream catalog
+
+# 2. Install one (drops a templated entry into ~/.memex/upstreams.json)
+memex upstream install github
+memex upstream install slack
+memex upstream install postgres
+
+# 3. Verify a connection
+memex upstream test github
+
+# 4. Restart your AI client — the proxied tools now appear alongside
+#    memex's native recall/add_node/observe/...
+```
+
+Inside the AI agent, two new tools surface:
+
+- `list_upstream_tools()` — discover the catalog of every proxied tool.
+- `call_upstream(upstream, tool, arguments)` — dispatch a call. Result is returned to the agent; an episodic event (`kind="tool_call"`) is recorded automatically.
+
+Memex's consolidation pass (v0.7) walks these `tool_call` events and promotes patterns into semantic facts: *"you've sent 14 messages to #engineering — that's your deploy channel"*, *"linear issue creation in ENG-INFRA fails 30% of the time when assignee is unset"*. **Gateway → perception → consolidation → brain.**
+
+### Catalog (curated)
+
+| id | description | requires |
+|---|---|---|
+| `filesystem` | Read/write files within an allowlist | — |
+| `git` | git operations (status, diff, log, commit) | uv |
+| `github` | PRs, issues, search, releases | `GITHUB_PERSONAL_ACCESS_TOKEN` |
+| `gitlab` | MRs, issues, pipelines | `GITLAB_PERSONAL_ACCESS_TOKEN` |
+| `fetch` | HTTP fetch + markdown extraction | uv |
+| `puppeteer` / `playwright` | Browser automation | — |
+| `sqlite` / `postgres` | Database queries | (postgres URL) |
+| `slack` | Send messages, list channels | `SLACK_BOT_TOKEN` + `SLACK_TEAM_ID` |
+| `linear` | Issue tracker | `LINEAR_API_KEY` |
+| `notion` / `gdrive` | Docs | (api keys / OAuth) |
+| `kubernetes` / `aws` | Infra | (kubeconfig / aws creds) |
+| `sentry` | Issue details + stack traces | `SENTRY_TOKEN` |
+| `time` | Timezone helpers | uv |
+
+`memex upstream catalog` lists everything; `memex upstream show <id>` shows full detail.
+
+### Configuration file
+
+The catalog is just a template — running `memex upstream install <id>` writes a regular entry into `.memex/upstreams.json` (project) or `~/.memex/upstreams.json` (user). Edit by hand if you prefer:
+
+```jsonc
+{
+  "upstreams": [
+    {
+      "name": "github",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-github"],
+      "env": {"GITHUB_PERSONAL_ACCESS_TOKEN": "ghp_..."},
+      "allow": ["*"],
+      "deny":  ["delete_*"],
+      "prefix": "{name}__"
+    }
+  ]
+}
+```
+
+Project-level config takes precedence over user-level.
+
 ## Architecture
 
 ```
@@ -118,7 +187,9 @@ See [docs/concepts.md](docs/concepts.md) for the full RAM-hardware ↔ human-mem
 | **v0.3** | Passive distillation + intent tracking | Sessions become semantic memory automatically (episodic → semantic consolidation); memex remembers user instructions + AI outcomes + flags when AI deviates from instructed approach |
 | **v0.4** | Self-curation | Background consolidation, decay, dedup, contradiction detection |
 | **v0.5** | Code-verified confidence | Memory grounded in actual code state — falsifiability checked by background pass |
-| **v0.6** | **Team mode + AuthFI** | `memex daemon` deployed on a team server; AuthFI handles SSO + member identity; every node carries `actor=<authfi_user_id>`; AI knows who decided what, when, why |
+| **v0.6** | **MCP gateway + agentic-memory positioning** | memex now re-exports upstream MCP servers as tools, auto-`observe()`s every call. Curated catalog (`memex upstream install …`). Loud failure on degraded recall (no silent BM25 fallback). Honest `memex doctor` diagnosis. Schema gains `degraded` field on `RecallResult`. Foundation for consolidation. |
+| **v0.7** | Consolidation + perception | Episodic→semantic promotion (`memex consolidate`); active pruning of stale nodes; multi-cue retrieval (project / time / file / error); per-tool MCP registration replaces the dispatch meta-tool. |
+| **v0.8** | Team mode + AuthFI | `memex daemon` deployed on a team server; AuthFI handles SSO + member identity; every node carries `actor=<authfi_user_id>`; AI knows who decided what, when, why. Daemon-as-arbiter resolves single-writer Kuzu lock. |
 | **v1.0** | Counterfactual reasoning | Memory that simulates consequences of edits before they happen |
 
 ## Team mode (v0.6)

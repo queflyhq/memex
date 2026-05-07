@@ -1,0 +1,34 @@
+memex daemon installed.
+
+{{- if eq .Values.service.type "ClusterIP" }}
+
+To reach the daemon from your dev machine:
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "memex.fullname" . }} 7777:{{ .Values.service.port }}
+
+Then point your MCP stdio client at it via:
+  export MEMEX_DAEMON_URL=http://127.0.0.1:7777
+{{- if .Values.auth.enabled }}
+  export MEMEX_AUTH_TOKEN=$(kubectl -n {{ .Release.Namespace }} get secret {{ include "memex.secretName" . }} -o jsonpath='{.data.token}' | base64 -d)
+{{- end }}
+  memex serve
+{{- else if eq .Values.service.type "LoadBalancer" }}
+
+Watch for an external IP:
+  kubectl -n {{ .Release.Namespace }} get svc {{ include "memex.fullname" . }} -w
+
+Once it has one, on your dev machine:
+  export MEMEX_DAEMON_URL=http://<EXTERNAL-IP>:{{ .Values.service.port }}
+{{- if .Values.auth.enabled }}
+  export MEMEX_AUTH_TOKEN=$(kubectl -n {{ .Release.Namespace }} get secret {{ include "memex.secretName" . }} -o jsonpath='{.data.token}' | base64 -d)
+{{- end }}
+  memex serve
+{{- end }}
+
+Health-check:
+  curl http://127.0.0.1:7777/health   # adjust if port-forward is on a different port
+
+Migrate legacy data into the daemon:
+  kubectl -n {{ .Release.Namespace }} exec -it {{ include "memex.fullname" . }}-0 -- memex migrate
+
+Tail the logs:
+  kubectl -n {{ .Release.Namespace }} logs -f {{ include "memex.fullname" . }}-0

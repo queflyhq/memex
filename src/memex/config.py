@@ -22,8 +22,15 @@ class Settings(BaseSettings):
     auth_token: str | None = None
     log_level: str = "INFO"
 
-    embed_model: str = "sentence-transformers/all-MiniLM-L6-v2"
+    embed_model: str = "BAAI/bge-small-en-v1.5"
     embed_dim: int = 384
+
+    # Cross-encoder reranker — second-stage precision filter. Off by default
+    # because adding ~30 ms / recall is a deliberate trade and requires a
+    # working ONNX runtime; flip on with MEMEX_RERANK_ENABLED=true.
+    rerank_enabled: bool = False
+    rerank_model: str = "Xenova/ms-marco-MiniLM-L-6-v2"
+    rerank_top_k: int = 20
 
     daemon_url: str | None = None
     pack_registry: str = "https://github.com/queflyhq/memex-skills"
@@ -31,15 +38,23 @@ class Settings(BaseSettings):
     bootstrap_root: Path = Field(default_factory=Path.cwd)
 
     @property
+    def store_path(self) -> Path:
+        """Unified DuckDB file holding concepts, edges, events, and vectors."""
+        return self.data_dir / "memex.duckdb"
+
+    @property
     def graph_path(self) -> Path:
+        """Legacy Kuzu directory — only used by the one-shot migration helper."""
         return self.data_dir / "graph.kuzu"
 
     @property
     def vectors_path(self) -> Path:
+        """Legacy SQLite vector file — migration source."""
         return self.data_dir / "vectors.db"
 
     @property
     def episodic_path(self) -> Path:
+        """Legacy SQLite episodic file — migration source."""
         return self.data_dir / "episodic.db"
 
     @property

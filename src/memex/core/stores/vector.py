@@ -24,7 +24,16 @@ class NumpyVectorStore:
         path.parent.mkdir(parents=True, exist_ok=True)
         self.path = path
         self.dim = dim
-        self.conn = sqlite3.connect(str(path), check_same_thread=False)
+        self.conn = sqlite3.connect(str(path), check_same_thread=False, timeout=30.0)
+        # See episodic.py for rationale on these pragmas (cross-process safety + speed).
+        cur = self.conn.cursor()
+        cur.execute("PRAGMA journal_mode=WAL")
+        cur.execute("PRAGMA synchronous=NORMAL")
+        cur.execute("PRAGMA busy_timeout=10000")
+        cur.execute("PRAGMA temp_store=MEMORY")
+        cur.execute("PRAGMA mmap_size=268435456")
+        cur.execute("PRAGMA cache_size=-65536")
+        cur.close()
         self.conn.executescript(
             """
             CREATE TABLE IF NOT EXISTS vectors (

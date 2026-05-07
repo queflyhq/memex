@@ -1,0 +1,95 @@
+# Default values for memex Helm chart.
+# Override via `helm install ... -f my-values.yaml` or `--set key=value`.
+
+image:
+  repository: ghcr.io/queflyhq/memex
+  tag: ""              # defaults to .Chart.AppVersion
+  pullPolicy: IfNotPresent
+  pullSecrets: []
+
+# Memex is single-writer (DuckDB); replicas MUST stay at 1.
+replicaCount: 1
+
+service:
+  type: ClusterIP      # bare-metal homelab? set to LoadBalancer for MetalLB.
+  port: 7777
+  annotations: {}
+
+# Persistent storage — graph.kuzu+vectors+events all live in one .duckdb file
+# under /data, plus the fastembed model cache.
+persistence:
+  enabled: true
+  storageClass: ""     # leave empty to use the cluster default
+  accessMode: ReadWriteOnce
+  size: 10Gi
+  annotations: {}
+
+# Memex environment. MEMEX_DATA_DIR and MEMEX_LISTEN are baked into the image
+# defaults; override here if you need to.
+env:
+  MEMEX_LOG_LEVEL: INFO
+  # Uncomment to flip on the cross-encoder reranker (requires healthy ONNX
+  # runtime; the image ships with one):
+  # MEMEX_RERANK_ENABLED: "true"
+
+# Bearer-token auth on the HTTP API. REQUIRED when service.type != ClusterIP
+# (the chart otherwise refuses to render — fail loud, never silent insecurity).
+auth:
+  enabled: true
+  # If `existingSecret` is set, the chart reads the token from there.
+  # Otherwise, set `token` to a random string and the chart creates a Secret.
+  existingSecret: ""
+  existingSecretKey: token
+  token: ""           # generate with: openssl rand -hex 32
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    cpu: 1000m
+    memory: 2Gi
+
+# Liveness/readiness probes hit the /health endpoint (always unauthenticated).
+probes:
+  liveness:
+    initialDelaySeconds: 20
+    periodSeconds: 30
+    timeoutSeconds: 3
+    failureThreshold: 3
+  readiness:
+    initialDelaySeconds: 5
+    periodSeconds: 10
+    timeoutSeconds: 3
+    failureThreshold: 3
+
+# Pod-level security. The image ships a non-root user (uid 10001).
+podSecurityContext:
+  fsGroup: 10001
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 10001
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop: ["ALL"]
+  readOnlyRootFilesystem: true
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+# Optional: nightly consolidation as a CronJob — runs `memex consolidate` so
+# the episodic stream gets compressed into durable summary concepts. Set
+# enabled: true to schedule it.
+consolidate:
+  enabled: false
+  schedule: "0 3 * * *"   # 03:00 daily
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 1Gi

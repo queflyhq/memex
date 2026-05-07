@@ -1,0 +1,18 @@
+apiVersion: v2
+name: memex
+description: Persistent cognitive memory daemon for AI coding tools — single-replica StatefulSet.
+type: application
+version: 0.6.0
+appVersion: 0.6.0
+home: https://github.com/queflyhq/memex
+sources:
+  - https://github.com/queflyhq/memex
+keywords:
+  - mcp
+  - memory
+  - ai
+  - claude-code
+  - knowledge-graph
+maintainers:
+  - name: Quefly
+    email: team@quefly.com

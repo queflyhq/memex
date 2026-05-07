@@ -39,7 +39,19 @@ class SqliteEpisodicStore:
     def __init__(self, path: Path):
         path.parent.mkdir(parents=True, exist_ok=True)
         self.path = path
-        self.conn = sqlite3.connect(str(path), check_same_thread=False)
+        self.conn = sqlite3.connect(str(path), check_same_thread=False, timeout=30.0)
+        # WAL + busy_timeout = readers don't block writers and writers don't block
+        # readers, so concurrent processes (parallel Claude sessions, daemon + CLI)
+        # can share this DB without SQLITE_BUSY errors. synchronous=NORMAL is
+        # durable under WAL and ~10x faster than the FULL default.
+        cur = self.conn.cursor()
+        cur.execute("PRAGMA journal_mode=WAL")
+        cur.execute("PRAGMA synchronous=NORMAL")
+        cur.execute("PRAGMA busy_timeout=10000")
+        cur.execute("PRAGMA temp_store=MEMORY")
+        cur.execute("PRAGMA mmap_size=268435456")
+        cur.execute("PRAGMA cache_size=-65536")
+        cur.close()
         self.conn.executescript(_DDL)
         self.conn.commit()
         self._lock = threading.RLock()

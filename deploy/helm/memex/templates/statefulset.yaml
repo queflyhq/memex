@@ -1,0 +1,100 @@
+{{- if and (ne .Values.service.type "ClusterIP") (not .Values.auth.enabled) -}}
+{{- fail "auth.enabled MUST be true when service.type is not ClusterIP — refusing to expose memex without a bearer token" -}}
+{{- end -}}
+{{- if and .Values.auth.enabled (not .Values.auth.existingSecret) (not .Values.auth.token) -}}
+{{- fail "auth.enabled is true but no token provided. Set auth.token (random hex) or auth.existingSecret." -}}
+{{- end }}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "memex.fullname" . }}
+  labels: {{- include "memex.labels" . | nindent 4 }}
+spec:
+  # Single-writer DB — DuckDB collides if multiple replicas open the same file.
+  # OnDelete strategy means upgrades require manual pod delete to avoid
+  # confused write paths during rolling.
+  replicas: 1
+  serviceName: {{ include "memex.fullname" . }}-headless
+  updateStrategy:
+    type: OnDelete
+  selector:
+    matchLabels: {{- include "memex.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels: {{- include "memex.selectorLabels" . | nindent 8 }}
+    spec:
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext: {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: memex
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext: {{- toYaml .Values.securityContext | nindent 12 }}
+          args: ["daemon", "--listen", "0.0.0.0:7777"]
+          ports:
+            - name: http
+              containerPort: 7777
+              protocol: TCP
+          env:
+            - name: MEMEX_DATA_DIR
+              value: /data
+            - name: MEMEX_LISTEN
+              value: "0.0.0.0:7777"
+            {{- if .Values.auth.enabled }}
+            - name: MEMEX_AUTH_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "memex.secretName" . }}
+                  key: {{ .Values.auth.existingSecretKey | default "token" }}
+            {{- end }}
+            {{- range $k, $v := .Values.env }}
+            - name: {{ $k }}
+              value: {{ $v | quote }}
+            {{- end }}
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            {{- toYaml .Values.probes.liveness | nindent 12 }}
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            {{- toYaml .Values.probes.readiness | nindent 12 }}
+          resources: {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+      {{- with .Values.nodeSelector }}
+      nodeSelector: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity: {{- toYaml . | nindent 8 }}
+      {{- end }}
+  {{- if .Values.persistence.enabled }}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        {{- with .Values.persistence.annotations }}
+        annotations: {{- toYaml . | nindent 10 }}
+        {{- end }}
+      spec:
+        accessModes: ["{{ .Values.persistence.accessMode }}"]
+        resources:
+          requests:
+            storage: {{ .Values.persistence.size }}
+        {{- if .Values.persistence.storageClass }}
+        storageClassName: {{ .Values.persistence.storageClass }}
+        {{- end }}
+  {{- end }}

@@ -1,0 +1,42 @@
+{{- if .Values.consolidate.enabled }}
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ include "memex.fullname" . }}-consolidate
+  labels: {{- include "memex.labels" . | nindent 4 }}
+spec:
+  schedule: {{ .Values.consolidate.schedule | quote }}
+  successfulJobsHistoryLimit: {{ .Values.consolidate.successfulJobsHistoryLimit }}
+  failedJobsHistoryLimit: {{ .Values.consolidate.failedJobsHistoryLimit }}
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: OnFailure
+          {{- with .Values.image.pullSecrets }}
+          imagePullSecrets:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          securityContext: {{- toYaml .Values.podSecurityContext | nindent 12 }}
+          containers:
+            - name: consolidate
+              image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+              imagePullPolicy: {{ .Values.image.pullPolicy }}
+              securityContext: {{- toYaml .Values.securityContext | nindent 16 }}
+              # Talk to the daemon over its Service rather than opening the
+              # data file directly — DuckDB is single-writer; two processes
+              # writing would clash.
+              args: ["consolidate", "--no-llm"]
+              env:
+                - name: MEMEX_DAEMON_URL
+                  value: "http://{{ include "memex.fullname" . }}:{{ .Values.service.port }}"
+                {{- if .Values.auth.enabled }}
+                - name: MEMEX_AUTH_TOKEN
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ include "memex.secretName" . }}
+                      key: {{ .Values.auth.existingSecretKey | default "token" }}
+                {{- end }}
+              resources: {{- toYaml .Values.consolidate.resources | nindent 16 }}
+{{- end }}

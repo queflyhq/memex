@@ -16,6 +16,7 @@ discipline applied to a graceful-degradation context.
 from __future__ import annotations
 
 import logging
+import threading
 from typing import Any
 
 import numpy as np
@@ -57,6 +58,7 @@ class FastEmbedProvider:
         self.model_name = model_name
         self.dim = dim
         self._model: Any | None = None
+        self._load_lock = threading.Lock()
 
     def is_available(self) -> bool:
         try:
@@ -68,13 +70,18 @@ class FastEmbedProvider:
     def _load(self) -> Any:
         if self._model is not None:
             return self._model
-        try:
-            from fastembed import TextEmbedding
-        except ImportError as e:
-            raise EmbeddingsUnavailableError("fastembed not installed") from e
-        log.info("loading embedding model: %s", self.model_name)
-        self._model = TextEmbedding(model_name=self.model_name)
-        return self._model
+        # Double-checked locking — first call loads ONNX (~seconds, ~hundreds of MB);
+        # without the lock, two concurrent embed() calls each instantiate their own model.
+        with self._load_lock:
+            if self._model is not None:
+                return self._model
+            try:
+                from fastembed import TextEmbedding
+            except ImportError as e:
+                raise EmbeddingsUnavailableError("fastembed not installed") from e
+            log.info("loading embedding model: %s", self.model_name)
+            self._model = TextEmbedding(model_name=self.model_name)
+            return self._model
 
     def embed(self, text: str) -> np.ndarray:
         model = self._load()
