@@ -294,10 +294,10 @@
       <div class="metric-row" style="margin-top: 14px;">
         <div class="metric">
           <div class="metric-num green">{fmtTokens(imp.tokens_injected)}</div>
-          <div class="metric-label">tokens auto-injected to Claude</div>
+          <div class="metric-label">~tokens emitted by memex hooks</div>
           <div class="metric-hint">
-            context the AI got for free across {fmt(imp.context_injections)} hook fires
-            — you didn't have to re-explain
+            additionalContext bytes our hooks wrote across {fmt(imp.context_injections)} fires
+            (Claude Code is contracted to feed this to the model — we count the emit, not the consumption)
           </div>
         </div>
       </div>
