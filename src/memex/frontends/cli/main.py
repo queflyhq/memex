@@ -2322,15 +2322,29 @@ def hook_pre_tool_gate() -> None:
         log.warning("hook pre-tool-gate: daemon call failed: %s", e)
         return
 
+    # Claude Code's documented PreToolUse hook output shape — emit BOTH
+    # the wrapped `hookSpecificOutput` form AND the flat top-level
+    # `permissionDecision` so different Claude Code versions both honor
+    # the call. The wrapped form is the canonical 2025+ shape.
     if decision == "approve":
         _emit_hook_output({
             "permissionDecision": "allow",
             "permissionDecisionReason": f"memex: {reason}",
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "allow",
+                "permissionDecisionReason": f"memex: {reason}",
+            },
         })
     elif decision == "deny":
         _emit_hook_output({
             "permissionDecision": "deny",
             "permissionDecisionReason": f"memex blocked: {reason}",
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "deny",
+                "permissionDecisionReason": f"memex blocked: {reason}",
+            },
         })
     # ask → no output (default user-prompt behavior fires)
 

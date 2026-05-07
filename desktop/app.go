@@ -277,6 +277,22 @@ func (a *App) GetEvents(kind string, limit int) (map[string]any, error) {
 	return out, nil
 }
 
+// GetNextActions returns the top-N tasks the user should pick up.
+func (a *App) GetNextActions(limit int) (any, error) {
+	if limit <= 0 {
+		limit = 5
+	}
+	body, _, err := a.daemonGet(fmt.Sprintf("/next-actions?limit=%d", limit))
+	if err != nil {
+		return nil, err
+	}
+	var out any
+	if err := json.Unmarshal(body, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // GetTasks pulls the project-management task list from the daemon.
 func (a *App) GetTasks(status string, limit int) (any, error) {
 	if limit <= 0 {

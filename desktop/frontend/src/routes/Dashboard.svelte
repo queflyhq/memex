@@ -1,8 +1,28 @@
 <script lang="ts">
   import { onMount, onDestroy } from "svelte";
-  import { GetHooksStatus } from "../../wailsjs/go/main/App.js";
+  import { GetHooksStatus, GetNextActions } from "../../wailsjs/go/main/App.js";
 
   export let GetStats: (windowHours: number) => Promise<any>;
+  let nextActions: any[] = [];
+
+  async function loadNextActions() {
+    try {
+      const r = await GetNextActions(5);
+      // /next-actions returns markdown text; parse a simple title list
+      // out of it. (Daemon's render layer flattens to markdown lines
+      // like "🔥 p1 | task-name | c_xxxxx".)
+      if (typeof r === "string") {
+        const lines = (r as string).split("\n").filter((l: string) => l.trim().startsWith("-") || l.trim().match(/^(🔥|⏳|🚧|⛔|✓)/));
+        nextActions = lines.slice(0, 5).map((l: string) => ({ raw: l }));
+      } else if (Array.isArray(r)) {
+        nextActions = (r as any[]).slice(0, 5);
+      } else {
+        nextActions = [];
+      }
+    } catch {
+      nextActions = [];
+    }
+  }
 
   let loading = true;
   let error: string | null = null;
@@ -39,10 +59,12 @@
 
   onMount(() => {
     load(windowHours);
+    loadNextActions();
     GetHooksStatus().then((h) => (hooks = h)).catch(() => {});
-    pollHandle = window.setInterval(
-      () => load(windowHours, true), POLL_INTERVAL_MS,
-    );
+    pollHandle = window.setInterval(() => {
+      load(windowHours, true);
+      loadNextActions();
+    }, POLL_INTERVAL_MS);
     tickHandle = window.setInterval(() => (nowTick = Date.now()), 1000);
   });
   onDestroy(() => {
@@ -270,6 +292,36 @@
       <div class="mem-hint">{stats.vector_dim ?? 384}-dim · {stats.embed_model ?? "—"}</div>
     </div>
   </div>
+
+  {#if stats.tasks_by_status && Object.keys(stats.tasks_by_status).length}
+    <h2 class="section-h">Project management</h2>
+    <div class="pm-grid">
+      <div class="pm-tile pm-projects">
+        <div class="pm-num">{fmt(stats.concepts_by_kind?.project ?? 0)}</div>
+        <div class="pm-label">Projects</div>
+        <div class="pm-hint">{fmt(stats.concepts_by_kind?.milestone ?? 0)} milestones</div>
+      </div>
+      {#each Object.entries(stats.tasks_by_status) as [status, n] (status)}
+        <div class="pm-tile pm-status pm-status-{status}">
+          <div class="pm-num">{fmt(Number(n))}</div>
+          <div class="pm-label">{status.replace("_", " ")}</div>
+          <div class="pm-hint">tasks</div>
+        </div>
+      {/each}
+    </div>
+
+    {#if nextActions.length}
+      <h3 class="micro-h">Next actions</h3>
+      <div class="next-list">
+        {#each nextActions as na (na.raw ?? na.id)}
+          <div class="next-row">
+            <span class="next-bullet">▸</span>
+            <span class="next-text">{na.raw ?? na.name ?? na.title ?? JSON.stringify(na)}</span>
+          </div>
+        {/each}
+      </div>
+    {/if}
+  {/if}
 
   {#if stats.concepts_by_kind && Object.keys(stats.concepts_by_kind).length}
     <h2 class="section-h">Concepts by kind</h2>
@@ -516,6 +568,80 @@
     display: grid;
     grid-template-columns: repeat(4, 1fr);
     gap: 10px;
+  }
+  .pm-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    gap: 10px;
+    margin-bottom: 14px;
+  }
+  .pm-tile {
+    background: #fafbfc;
+    border: 1px solid #e6e8eb;
+    border-radius: 6px;
+    padding: 12px 14px;
+  }
+  .pm-tile.pm-projects {
+    background: #fef9c3;
+    border-color: #fde047;
+  }
+  .pm-tile.pm-status-pending      { border-left: 3px solid #94a3b8; }
+  .pm-tile.pm-status-in_progress  { border-left: 3px solid #0ea5e9; }
+  .pm-tile.pm-status-blocked      { border-left: 3px solid #dc2626; }
+  .pm-tile.pm-status-cancelled    { border-left: 3px solid #94a3b8; }
+  .pm-tile.pm-status-completed    { border-left: 3px solid #16a34a; }
+  .pm-num {
+    font-family: "Plus Jakarta Sans", sans-serif;
+    font-size: 22px;
+    font-weight: 700;
+    color: #1f2328;
+  }
+  .pm-label {
+    font-size: 12px;
+    font-weight: 500;
+    color: #1f2328;
+    margin-top: 2px;
+    text-transform: capitalize;
+  }
+  .pm-hint {
+    font-size: 11px;
+    color: #6b7280;
+    margin-top: 1px;
+  }
+  .micro-h {
+    margin: 14px 0 6px;
+    font-size: 11px;
+    font-weight: 700;
+    color: #6b7280;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  .next-list {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .next-row {
+    display: grid;
+    grid-template-columns: 18px 1fr;
+    gap: 8px;
+    background: #fafbfc;
+    border: 1px solid #e6e8eb;
+    border-radius: 5px;
+    padding: 6px 10px;
+    font-size: 12px;
+  }
+  .next-bullet {
+    color: #fbbf24;
+    font-weight: 700;
+  }
+  .next-text {
+    color: #1f2328;
+    font-family: "Fira Code", monospace;
+    font-size: 11px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   .mem-tile {
     background: #fafbfc;
