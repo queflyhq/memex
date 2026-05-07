@@ -367,6 +367,230 @@ class MCPServer:
             return payload
 
         @mcp.tool()
+        def add_code_source(
+            path: str,
+            name: str | None = None,
+            index_now: bool = True,
+        ) -> dict[str, Any]:
+            """Register a codebase as a memex source and (by default) index it.
+
+            After this call, the codebase is queryable via `recall_code()`,
+            `find_code_orphans()`, and `link_cross_repo()`. Pass
+            `index_now=False` if you want to register-then-trigger-later
+            (e.g., during a hosted setup flow where indexing is async).
+
+            WHEN TO CALL:
+              - User points at a directory and says "remember this codebase"
+                / "index this repo" / "add my project to memex".
+              - First-time setup: register every relevant repo so cross-
+                repo recall has multiple sources to walk between.
+
+            PARAMETERS:
+              path (str): absolute path to the repo root. Must exist and be
+                a directory.
+              name (str, optional): display name. Defaults to a slug from
+                the basename + 8-hex of the absolute path (so two clones
+                with the same basename don't collide).
+              index_now (bool, default=True): index immediately. False
+                leaves the source registered without symbols/files.
+
+            RETURNS:
+              {
+                "id": "c_<hex>",
+                "name": "<display name>",
+                "path": "<absolute path>",
+                "indexed": <bool>,
+                "files": <int>,
+                "symbols": <int>,
+                "languages": {"python": 12, "go": 8, ...},
+                "skipped_files": <int>,
+              }
+
+            EXAMPLE:
+              add_code_source(path="/Users/me/project", index_now=True)
+            """
+            from memex.codebase import (
+                add_source as _add_source,
+                index_source as _index_source,
+            )
+            try:
+                src = _add_source(engine, path, name=name)
+            except Exception as e:  # noqa: BLE001
+                return {"error": f"register failed: {e}", "path": path}
+            payload: dict[str, Any] = {
+                "id": src.id,
+                "name": src.name,
+                "path": src.metadata.get("path"),
+                "indexed": False,
+                "files": 0,
+                "symbols": 0,
+                "languages": {},
+                "skipped_files": 0,
+            }
+            if index_now:
+                try:
+                    res = _index_source(engine, src.id)
+                except Exception as e:  # noqa: BLE001
+                    return {**payload, "error": f"index failed: {e}"}
+                payload.update({
+                    "indexed": True,
+                    "files": res.files_indexed,
+                    "symbols": res.symbols_indexed,
+                    "languages": res.languages,
+                    "skipped_files": res.skipped_files,
+                })
+            return payload
+
+        @mcp.tool()
+        def list_code_sources() -> list[dict[str, Any]]:
+            """List every registered codebase source.
+
+            RETURNS:
+              [
+                {
+                  "id": "c_<hex>",
+                  "name": "<display>",
+                  "path": "<abs path>",
+                  "files": <int>,
+                  "symbols": <int>,
+                  "last_indexed_at": "<iso>" | null,
+                },
+                ...
+              ]
+            """
+            from memex.codebase import list_sources as _list_sources
+            sources = _list_sources(engine)
+            return [
+                {
+                    "id": s.id,
+                    "name": s.name,
+                    "path": s.metadata.get("path"),
+                    "files": s.metadata.get("indexed_files", 0),
+                    "symbols": s.metadata.get("indexed_symbols", 0),
+                    "last_indexed_at": s.metadata.get("last_indexed_at"),
+                }
+                for s in sources
+            ]
+
+        @mcp.tool()
+        def reindex_code_source(source_id: str) -> dict[str, Any]:
+            """Drop existing chunks and re-index a registered source from
+            disk. Use this after the codebase has changed (after a git
+            pull, after a feature branch merge, after large edits).
+
+            For single-file updates, prefer the future per-file reindex
+            primitive (see "memex codebase memory stays current" decision)
+            once it lands — this is the full-source path.
+            """
+            from memex.codebase import reindex_source as _reindex_source
+            try:
+                res = _reindex_source(engine, source_id)
+            except Exception as e:  # noqa: BLE001
+                return {"error": str(e), "source_id": source_id}
+            return {
+                "source_id": source_id,
+                "files": res.files_indexed,
+                "symbols": res.symbols_indexed,
+                "languages": res.languages,
+                "skipped_files": res.skipped_files,
+            }
+
+        @mcp.tool()
+        def remove_code_source(source_id: str) -> dict[str, Any]:
+            """Delete a source plus every file + symbol it owns. Cascade
+            deletion — the file and symbol concepts go away with their
+            edges. Use sparingly; for refresh prefer `reindex_code_source`.
+            """
+            from memex.codebase import remove_source as _remove_source
+            try:
+                deleted = _remove_source(engine, source_id)
+            except Exception as e:  # noqa: BLE001
+                return {"error": str(e), "source_id": source_id}
+            return {"source_id": source_id, "deleted_concepts": deleted}
+
+        @mcp.tool()
+        def link_cross_repo_symbols(
+            source_ids: list[str] | None = None,
+            threshold: float = 0.7,
+            dry_run: bool = False,
+        ) -> dict[str, Any]:
+            """Run the cross-repo linker — create `same_as` edges between
+            symbols that are likely the same logical concept across
+            registered sources.
+
+            This is what makes end-to-end cross-service traversal possible.
+            After running it, `recall_code("JWTClaims")` returns the
+            symbol matched in every source it appears, fused via same_as,
+            so neighborhood walks cross repository boundaries seamlessly.
+
+            Slice B-α heuristic: name + symbol_kind + Jaccard signature
+            similarity. Names < 4 chars or in the generic-noise list
+            (parse, init, run, ...) are excluded — cross-linking those
+            across services is almost always wrong. API-call and
+            proto-shared-definition heuristics are queued for slice B-β.
+
+            WHEN TO CALL:
+              - After indexing 2+ sources for the first time.
+              - After a major refactor that renamed types, so new same_as
+                edges reflect the new naming.
+              - When the user asks "find this concept across all my repos."
+
+            PARAMETERS:
+              source_ids (list[str], optional): scope to a subset of
+                registered sources. Defaults to all.
+              threshold (float, default=0.7): minimum signature Jaccard
+                similarity to create the edge. Lower = more recall, more
+                false positives.
+              dry_run (bool, default=False): compute pairs without writing
+                edges. Returns the same shape with edges_created=0.
+
+            RETURNS:
+              {
+                "pairs": [
+                  {"a_id": "c_x", "b_id": "c_y",
+                   "a_name": "JWTClaims", "b_name": "JWTClaims",
+                   "a_source": "c_src1", "b_source": "c_src2",
+                   "similarity": 0.85, "heuristic": "name+kind+sig"},
+                  ...
+                ],
+                "edges_created": <int>,
+                "sources_considered": <int>,
+                "candidates_examined": <int>,
+                "skipped_generic": <int>,
+                "skipped_short_name": <int>,
+                "dry_run": <bool>,
+              }
+            """
+            from memex.codebase import link_cross_repo as _link_cross_repo
+            try:
+                res = _link_cross_repo(
+                    engine,
+                    source_ids=source_ids,
+                    threshold=threshold,
+                    dry_run=dry_run,
+                )
+            except Exception as e:  # noqa: BLE001
+                return {"error": str(e)}
+            return {
+                "pairs": [
+                    {
+                        "a_id": p.a_id, "b_id": p.b_id,
+                        "a_name": p.a_name, "b_name": p.b_name,
+                        "a_source": p.a_source, "b_source": p.b_source,
+                        "similarity": p.similarity,
+                        "heuristic": p.heuristic,
+                    }
+                    for p in res.pairs
+                ],
+                "edges_created": 0 if dry_run else len(res.pairs),
+                "sources_considered": res.sources_considered,
+                "candidates_examined": res.candidates_examined,
+                "skipped_generic": res.skipped_generic,
+                "skipped_short_name": res.skipped_short_name,
+                "dry_run": dry_run,
+            }
+
+        @mcp.tool()
         def find_code_orphans(
             source_id: str | None = None,
             include_private: bool = False,
