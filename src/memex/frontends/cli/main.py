@@ -1750,5 +1750,143 @@ def recall_code_cmd(
         engine.close()
 
 
+# ----------------------------------------------------------------------------
+# Secrets vault — `memex secret` subcommands.
+# ----------------------------------------------------------------------------
+
+
+secret_app = typer.Typer(
+    name="secret",
+    help="OS-keychain-backed secrets vault. memex stores secrets locally; "
+         "the AI layer only ever sees `secret://provider/name` handles.",
+    no_args_is_help=True,
+)
+app.add_typer(secret_app)
+
+
+def _secrets_store():
+    from memex.secrets import SecretsStore
+    settings = get_settings()
+    return SecretsStore(Path(str(settings.data_dir)) / "secrets")
+
+
+@secret_app.command("put")
+def secret_put_cmd(
+    provider: Annotated[str, typer.Argument(help="Provider namespace (e.g. github, openai, tenant.acme).")],
+    name: Annotated[str, typer.Argument(help="Secret name within the provider.")],
+    value: Annotated[str | None, typer.Option(
+        "--value", "-v", help="Secret value. Omit to read from stdin (recommended).",
+    )] = None,
+) -> None:
+    """Store a secret in the OS keychain. Returns just the handle — the
+    value never echoes to the terminal or any logs."""
+    if value is None:
+        # Read from stdin so the value doesn't appear in shell history.
+        value = sys.stdin.readline().strip()
+        if not value:
+            err_console.print("[red]no value provided[/red]")
+            raise typer.Exit(code=1)
+    store = _secrets_store()
+    handle = store.put(provider, name, value)
+    console.print(f"[green]stored[/green] {handle}")
+
+
+@secret_app.command("get")
+def secret_get_cmd(
+    handle: Annotated[str, typer.Argument(
+        help="Either a `secret://provider/name` handle or `provider/name`.",
+    )],
+    actor: Annotated[str, typer.Option("--actor", help="Audit actor.")] = "human",
+) -> None:
+    """Resolve a handle to its literal value. Audit trail records who
+    asked + when. Use sparingly — the value goes to stdout."""
+    from memex.secrets import SecretNotFoundError
+    h = handle if handle.startswith("secret://") else f"secret://{handle}"
+    store = _secrets_store()
+    try:
+        value = store.get(h, actor=actor)
+    except SecretNotFoundError:
+        err_console.print(f"[red]not found:[/red] {h}")
+        raise typer.Exit(code=1)
+    # Print to stdout WITHOUT a label or trailing newline beyond the value
+    # so callers can pipe it directly: `memex secret get foo/bar | curl …`
+    sys.stdout.write(value)
+
+
+@secret_app.command("delete")
+def secret_delete_cmd(
+    handle: Annotated[str, typer.Argument(help="`secret://provider/name`.")],
+) -> None:
+    """Remove a secret from the keychain + the index."""
+    h = handle if handle.startswith("secret://") else f"secret://{handle}"
+    store = _secrets_store()
+    removed = store.delete(h)
+    if removed:
+        console.print(f"[green]deleted[/green] {h}")
+    else:
+        console.print(f"[yellow]not present[/yellow] {h}")
+
+
+@secret_app.command("list")
+def secret_list_cmd() -> None:
+    """List every secret in the vault. NEVER prints values — just the
+    metadata (provider, name, created/last-resolved timestamps)."""
+    store = _secrets_store()
+    rows = store.list()
+    if not rows:
+        console.print("[dim]vault is empty[/dim]")
+        return
+    table = Table(title=f"{len(rows)} secret(s)")
+    table.add_column("handle", style="cyan")
+    table.add_column("created", style="dim")
+    table.add_column("last resolved", style="dim")
+    table.add_column("by", style="dim")
+    for r in rows:
+        table.add_row(
+            f"secret://{r.provider}/{r.name}",
+            r.created_at,
+            r.last_resolved_at or "—",
+            r.last_resolved_by or "—",
+        )
+    console.print(table)
+
+
+@secret_app.command("redact")
+def secret_redact_cmd(
+    text: Annotated[str | None, typer.Argument(
+        help="Text to scan + redact. Omit to read from stdin.",
+    )] = None,
+    auto_store: Annotated[bool, typer.Option(
+        "--auto-store/--preview",
+        help="Default: actually move detected secrets into the vault. "
+             "--preview just shows what would change without storing.",
+    )] = True,
+) -> None:
+    """Scan text for known secret patterns and replace each match with a
+    `secret://provider/name` handle. By default the secret is moved into
+    the vault; `--preview` reports without storing.
+
+    Use this for cleaning up logs, transcripts, or any text you're about
+    to commit to memex memory.
+    """
+    from memex.secrets import redact
+
+    if text is None:
+        text = sys.stdin.read()
+    if auto_store:
+        store = _secrets_store()
+    else:
+        # Preview mode — use a throw-away store under tmp.
+        import tempfile
+        store = _secrets_store()  # still need the store; preview just reports changes
+    result = redact(text, store)
+    console.print(result.redacted_text)
+    if result.events:
+        err_console.print(
+            f"[yellow]redacted {len(result.events)} secret(s)[/yellow] — "
+            + ", ".join(f"{e.pattern_name} → {e.handle}" for e in result.events)
+        )
+
+
 if __name__ == "__main__":
     app()

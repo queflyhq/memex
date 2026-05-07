@@ -59,6 +59,10 @@ dependencies = [
     "tree-sitter-yaml>=0.7",
     "tree-sitter-hcl>=1.1",
     "tree-sitter-svelte>=1.0",
+    # Secrets vault — OS keychain backend so the AI layer never sees
+    # literal secret values (memex returns `secret://provider/name`
+    # handles; resolution happens at the boundary on demand).
+    "keyring>=24",
 ]
 
 [project.optional-dependencies]

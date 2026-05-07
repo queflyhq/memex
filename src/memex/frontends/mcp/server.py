@@ -22,6 +22,7 @@ from __future__ import annotations
 import base64
 import logging
 from importlib import resources
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Union
 
 from memex.core.engine import Engine
@@ -585,6 +586,128 @@ class MCPServer:
                 "skipped_generic": res.skipped_generic,
                 "skipped_short_name": res.skipped_short_name,
                 "dry_run": dry_run,
+            }
+
+        @mcp.tool()
+        def list_secrets() -> list[dict[str, Any]]:
+            """List every secret in the OS-keychain-backed vault.
+
+            NEVER returns values — only the index of registered secrets
+            with their audit metadata. Use this when the user asks
+            "what secrets does memex have for me" / "is there a token
+            for service X already configured."
+
+            RETURNS:
+              [
+                {
+                  "handle": "secret://provider/name",
+                  "provider": "...",
+                  "name": "...",
+                  "created_at": "<iso>",
+                  "last_resolved_at": "<iso>" | null,
+                  "last_resolved_by": "<actor>" | null,
+                },
+                ...
+              ]
+
+            The literal secret VALUES are never accessible via MCP — that
+            is the whole point of the vault. Use `memex secret get` from
+            the CLI to retrieve values for human use, or configure
+            upstream auth via `token_memex: secret://...` to let memex
+            resolve at the boundary.
+            """
+            from memex.secrets import SecretsStore
+            from memex.config import get_settings
+
+            store = SecretsStore(
+                Path(str(get_settings().data_dir)) / "secrets"
+            )
+            return [
+                {
+                    "handle": f"secret://{r.provider}/{r.name}",
+                    "provider": r.provider,
+                    "name": r.name,
+                    "created_at": r.created_at,
+                    "last_resolved_at": r.last_resolved_at,
+                    "last_resolved_by": r.last_resolved_by,
+                }
+                for r in store.list()
+            ]
+
+        @mcp.tool()
+        def redact_secrets(text: str, store: bool = True) -> dict[str, Any]:
+            """Scan `text` for known secret patterns (API keys, tokens,
+            JWTs, PEM blocks) and replace each match with a
+            `secret://provider/name` handle. Optionally moves detected
+            values into the vault.
+
+            Use this BEFORE persisting any text into memory that may
+            contain secrets — log excerpts, error traces, transcripts.
+            The whole point: literal secret values must not enter the
+            concept graph or episodic stream.
+
+            PARAMETERS:
+              text (str): the text to scan + redact.
+              store (bool, default=True): when True, detected values
+                land in the OS keychain and the redacted text references
+                them via `secret://` handles. When False, the function
+                still returns redacted output but the events list is
+                empty (preview-only — handle text just shows the
+                pattern name).
+
+            RETURNS:
+              {
+                "redacted_text": "<text with handles in place of values>",
+                "redactions": [
+                  {"pattern_name": "github-pat", "handle":
+                   "secret://github/auto-abc123", "severity": "high",
+                   "span": [start, end]}
+                  ...
+                ],
+                "changed": <bool>,
+              }
+
+            Patterns covered: AWS access keys, OpenAI API keys,
+            Anthropic API keys, GitHub PATs, Slack tokens, Stripe keys,
+            JWTs, Bearer-header tokens, PEM private keys.
+            """
+            from memex.secrets import SecretsStore, redact
+            from memex.config import get_settings
+
+            secrets_store = SecretsStore(
+                Path(str(get_settings().data_dir)) / "secrets"
+            )
+            if not store:
+                # Preview mode — run regex-only scan without writing.
+                from memex.secrets.redact import _DEFAULT_PATTERNS  # internal
+                events = []
+                redacted = text
+                for pat in _DEFAULT_PATTERNS:
+                    redacted = pat.pattern.sub(
+                        f"<<{pat.name}>>", redacted
+                    )
+                    events.extend(
+                        {"pattern_name": pat.name, "severity": pat.severity}
+                        for _ in pat.pattern.finditer(text)
+                    )
+                return {
+                    "redacted_text": redacted,
+                    "redactions": events,
+                    "changed": bool(events),
+                }
+            result = redact(text, secrets_store)
+            return {
+                "redacted_text": result.redacted_text,
+                "redactions": [
+                    {
+                        "pattern_name": e.pattern_name,
+                        "handle": e.handle,
+                        "severity": e.severity,
+                        "span": list(e.span),
+                    }
+                    for e in result.events
+                ],
+                "changed": result.changed,
             }
 
         @mcp.tool()
