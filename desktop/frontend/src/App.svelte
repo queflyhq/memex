@@ -9,6 +9,7 @@
     GetSkills,
   } from "../wailsjs/go/main/App.js";
   import qfBadge from "./assets/quefly-badge.svg";
+  import StatusBar from "./lib/StatusBar.svelte";
   import Dashboard from "./routes/Dashboard.svelte";
   import Graph from "./routes/Graph.svelte";
   import Concepts from "./routes/Concepts.svelte";
@@ -103,15 +104,10 @@
         {/each}
       {/each}
     </nav>
-    <div class="status">
-      <span class="dot" class:alive={daemonAlive}></span>
-      <span class="muted">
-        daemon: {daemonAlive ? "alive" : "down"}
-      </span>
-    </div>
   </aside>
 
-  <section class="main">
+  <section class="main-with-bar">
+    <section class="main">
     {#if active === "dashboard"}
       <Dashboard {GetStats} />
     {:else if active === "graph"}
@@ -135,6 +131,8 @@
     {:else if active === "activity"}
       <Activity />
     {/if}
+    </section>
+    <StatusBar />
   </section>
 </main>
 
@@ -260,7 +258,13 @@
   .muted {
     color: #6b7280;
   }
+  .main-with-bar {
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
   .main {
+    flex: 1;
     overflow-y: auto;
     padding: 24px 32px;
     background: #ffffff;

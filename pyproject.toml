@@ -63,6 +63,9 @@ dependencies = [
     # literal secret values (memex returns `secret://provider/name`
     # handles; resolution happens at the boundary on demand).
     "keyring>=24",
+    # System self-reporting (RAM/CPU/process info) for the desktop's
+    # daemon-status footer. Cross-platform; lightweight.
+    "psutil>=5.9",
 ]
 
 [project.optional-dependencies]

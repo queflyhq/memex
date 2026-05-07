@@ -134,6 +134,37 @@ func (a *App) GetDaemonStatus() map[string]any {
 	return map[string]any{"alive": false, "url": a.daemonURL}
 }
 
+// GetSystemInfo polls the daemon's /system endpoint — RAM, CPU, uptime,
+// DB size breakdown. For the desktop's bottom status bar.
+func (a *App) GetSystemInfo() (map[string]any, error) {
+	body, _, err := a.daemonGet("/system")
+	if err != nil {
+		return map[string]any{"error": err.Error()}, nil
+	}
+	var out map[string]any
+	if err := json.Unmarshal(body, &out); err != nil {
+		return map[string]any{"error": err.Error()}, nil
+	}
+	return out, nil
+}
+
+// GetDaemonLogs returns the most recent N lines from the daemon's
+// in-memory log ring buffer.
+func (a *App) GetDaemonLogs(limit int) (map[string]any, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	body, _, err := a.daemonGet(fmt.Sprintf("/logs?limit=%d", limit))
+	if err != nil {
+		return map[string]any{"error": err.Error()}, nil
+	}
+	var out map[string]any
+	if err := json.Unmarshal(body, &out); err != nil {
+		return map[string]any{"error": err.Error()}, nil
+	}
+	return out, nil
+}
+
 // GetStats fetches the rich Dashboard / Impact payload.
 // Falls back to /progress + /tasks when the daemon doesn't yet expose
 // /stats (older daemon binary still serving).

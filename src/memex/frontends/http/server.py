@@ -14,10 +14,46 @@ Defaults:
 from __future__ import annotations
 
 import logging
-from collections import Counter
+import time
+from collections import Counter, deque
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Annotated, Any
+
+
+# In-memory ring buffer of recent log records — populated by a log
+# handler attached at server-build time. Read by /logs.
+_LOG_RING: deque = deque(maxlen=400)
+_DAEMON_STARTED_AT: float = time.time()
+
+
+class _RingHandler(logging.Handler):
+    """Logging handler that appends rendered records to a deque."""
+
+    def emit(self, record: logging.LogRecord) -> None:  # noqa: D401
+        try:
+            msg = self.format(record)
+            _LOG_RING.append({
+                "ts": datetime.fromtimestamp(
+                    record.created, timezone.utc
+                ).isoformat(),
+                "level": record.levelname,
+                "logger": record.name,
+                "msg": msg,
+            })
+        except Exception:
+            pass
+
+
+def _attach_ring_handler() -> None:
+    """Idempotent — attach once on first call."""
+    root = logging.getLogger()
+    for h in root.handlers:
+        if isinstance(h, _RingHandler):
+            return
+    h = _RingHandler(level=logging.INFO)
+    h.setFormatter(logging.Formatter("%(message)s"))
+    root.addHandler(h)
 
 from fastapi import Body, Depends, FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field
@@ -333,6 +369,8 @@ class HTTPFrontend:
         self.port = port
         self.auth_token = auth_token
         self._app: FastAPI | None = None
+        # Capture log records into the in-memory ring so /logs has data.
+        _attach_ring_handler()
 
     @property
     def app(self) -> FastAPI:
@@ -354,6 +392,70 @@ class HTTPFrontend:
         @app.get("/health", tags=["meta"])
         def health() -> dict[str, Any]:
             return {"ok": True, "version": __version__, **engine.stats()}
+
+        @app.get("/system", tags=["meta"], dependencies=[Depends(check_auth)])
+        def system_info() -> dict[str, Any]:
+            """Daemon process self-report: RAM, CPU, uptime, DB size,
+            embedding model. Powers the desktop's bottom status bar."""
+            import os
+            data: dict[str, Any] = {}
+            try:
+                import psutil
+                p = psutil.Process(os.getpid())
+                with p.oneshot():
+                    mem = p.memory_info()
+                    data["ram_mb"] = round(mem.rss / 1024 / 1024, 1)
+                    data["cpu_percent"] = p.cpu_percent(interval=0.05)
+                    data["pid"] = p.pid
+                    data["threads"] = p.num_threads()
+            except Exception as e:  # noqa: BLE001
+                data["ram_mb"] = None
+                data["error"] = f"psutil unavailable: {e}"
+
+            data["uptime_seconds"] = int(time.time() - _DAEMON_STARTED_AT)
+            data["python"] = (
+                f"{__import__('sys').version_info.major}."
+                f"{__import__('sys').version_info.minor}."
+                f"{__import__('sys').version_info.micro}"
+            )
+
+            # Database size — sum every memex DB / index file in data_dir.
+            try:
+                from memex.config import get_settings
+                d = Path(str(get_settings().data_dir))
+                total = 0
+                breakdown: dict[str, int] = {}
+                for f in d.iterdir():
+                    if f.is_file():
+                        sz = f.stat().st_size
+                        breakdown[f.name] = sz
+                        total += sz
+                # Include secrets index
+                sec = d / "secrets" / "secrets.json"
+                if sec.is_file():
+                    breakdown["secrets/secrets.json"] = sec.stat().st_size
+                    total += breakdown["secrets/secrets.json"]
+                data["db_bytes_total"] = total
+                data["db_breakdown"] = breakdown
+            except Exception as e:  # noqa: BLE001
+                data["db_bytes_total"] = None
+                data["db_error"] = str(e)
+
+            data["embed_model"] = engine.stats().get("embed_model")
+            data["embed_tier_available"] = engine.stats().get(
+                "embed_tier_available", False
+            )
+            return data
+
+        @app.get("/logs", tags=["meta"], dependencies=[Depends(check_auth)])
+        def daemon_logs(limit: int = 200) -> dict[str, Any]:
+            """Tail of the in-memory daemon log ring buffer.
+            Capped at 400 entries (the buffer's max)."""
+            limit = max(1, min(limit, 400))
+            return {
+                "logs": list(_LOG_RING)[-limit:],
+                "buffer_size": len(_LOG_RING),
+            }
 
         @app.get("/recall", tags=["query"], dependencies=[Depends(check_auth)])
         def recall(
