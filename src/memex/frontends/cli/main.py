@@ -814,7 +814,11 @@ def hooks_install(
                 {
                     "matcher": "*",
                     "hooks": [
-                        {"type": "command", "command": "memex observe-event tool_pre"}
+                        # Layer-4: consult policies + AFK + hard-deny.
+                        # Emits permissionDecision when a policy fires;
+                        # otherwise silent (default prompt path runs).
+                        {"type": "command", "command": "memex hook pre-tool-gate"},
+                        {"type": "command", "command": "memex observe-event tool_pre"},
                     ],
                 }
             ],
@@ -2072,6 +2076,249 @@ def hook_post_edit() -> None:
         log.warning("hook post-edit: reindex_file failed: %s", e)
     finally:
         engine.close()
+
+
+# ----------------------------------------------------------------------------
+# Layer-4 enforcement — `memex policy` and `memex afk` subcommands.
+# ----------------------------------------------------------------------------
+
+
+policy_app = typer.Typer(
+    name="policy",
+    help="Approval policies — auto-approve or auto-deny tool calls memex sees "
+         "via the PreToolUse hook. Conservative by default; user opts in.",
+    no_args_is_help=True,
+)
+app.add_typer(policy_app)
+
+
+@policy_app.command("add")
+def policy_add_cmd(
+    tool_pattern: Annotated[str, typer.Argument(
+        help="Regex matching the tool name (e.g. 'Bash', 'Edit|Write', '.*').",
+    )],
+    decision: Annotated[str, typer.Option(
+        "--decision", help="approve | deny",
+    )] = "approve",
+    args_json: Annotated[str, typer.Option(
+        "--args", help="JSON object of args matchers, e.g. "
+                       "'{\"command\": {\"prefix\": \"npm \"}}'.",
+    )] = "{}",
+    reason: Annotated[str, typer.Option("--reason", help="Why this policy.")] = "",
+    priority: Annotated[int, typer.Option("--priority")] = 100,
+    hard_deny: Annotated[bool, typer.Option(
+        "--hard-deny", help="Mark as hard-deny — bypasses AFK mode.",
+    )] = False,
+) -> None:
+    """Add an approval policy."""
+    import json as _json
+    from memex.enforcement import ApprovalDecision, add_policy
+
+    try:
+        args_match = _json.loads(args_json)
+    except _json.JSONDecodeError as e:
+        err_console.print(f"[red]invalid --args JSON:[/red] {e}")
+        raise typer.Exit(code=2) from None
+
+    settings = get_settings()
+    engine = Engine.build_default(settings)
+    try:
+        if hard_deny:
+            # Use the constraint kind directly with policy_type=hard_deny so
+            # _check_hard_deny picks it up.
+            from memex.core.schema import NodeKind, Source as SrcActor
+            engine.add(
+                name=f"hard-deny: {tool_pattern} {args_match}",
+                description=reason or "user-defined hard deny",
+                kind=NodeKind.constraint,
+                source=SrcActor.human,
+                metadata={
+                    "policy_type": "hard_deny",
+                    "tool_pattern": tool_pattern,
+                    "args_match": args_match,
+                    "reason": reason,
+                    "enabled": True,
+                },
+            )
+            console.print(f"[red]hard-deny[/red] {tool_pattern} {args_match}")
+            return
+        c = add_policy(
+            engine,
+            tool_pattern=tool_pattern,
+            decision=ApprovalDecision(decision),
+            args_match=args_match,
+            reason=reason,
+            priority=priority,
+        )
+        console.print(f"[green]added policy[/green] [cyan]{c.id}[/cyan] "
+                      f"({decision} {tool_pattern})")
+    finally:
+        engine.close()
+
+
+@policy_app.command("list")
+def policy_list_cmd() -> None:
+    """List active approval policies (sorted by priority)."""
+    from memex.enforcement import list_policies
+
+    settings = get_settings()
+    engine = Engine.build_default(settings)
+    try:
+        rows = list_policies(engine)
+        if not rows:
+            console.print("[dim]no policies registered[/dim]")
+            return
+        table = Table(title=f"{len(rows)} policy/policies")
+        table.add_column("id", style="cyan")
+        table.add_column("decision", style="bold")
+        table.add_column("tool")
+        table.add_column("args matcher", style="dim")
+        table.add_column("reason", style="dim")
+        for p in rows:
+            colour = "green" if p.decision.value == "approve" else "red"
+            table.add_row(
+                p.id, f"[{colour}]{p.decision.value}[/{colour}]",
+                p.tool_pattern, str(p.args_match), p.reason,
+            )
+        console.print(table)
+    finally:
+        engine.close()
+
+
+@policy_app.command("remove")
+def policy_remove_cmd(
+    policy_id: Annotated[str, typer.Argument(help="Policy concept id (c_…)")],
+) -> None:
+    from memex.enforcement import remove_policy
+
+    settings = get_settings()
+    engine = Engine.build_default(settings)
+    try:
+        ok = remove_policy(engine, policy_id)
+        if ok:
+            console.print(f"[green]removed[/green] {policy_id}")
+        else:
+            console.print(f"[yellow]not found[/yellow] {policy_id}")
+    finally:
+        engine.close()
+
+
+afk_app = typer.Typer(
+    name="afk",
+    help="AFK mode — auto-approve every tool call (except hard-deny) for a "
+         "set duration so the AI works unattended; user audits on return.",
+    no_args_is_help=True,
+)
+app.add_typer(afk_app)
+
+
+@afk_app.command("on")
+def afk_on_cmd(
+    hours: Annotated[float, typer.Option(
+        "--for", help="Duration in hours.",
+    )] = 4.0,
+    note: Annotated[str, typer.Option(
+        "--note", help="Why AFK is on (so the user remembers later).",
+    )] = "",
+) -> None:
+    """Enable AFK mode."""
+    from memex.enforcement import enable_afk_mode
+
+    settings = get_settings()
+    engine = Engine.build_default(settings)
+    try:
+        flag = enable_afk_mode(engine, duration_hours=hours, note=note)
+        console.print(
+            f"[green]AFK mode on[/green] (expires "
+            f"{flag.metadata.get('expires_at')})\n"
+            f"[dim]auto-approves every tool call EXCEPT hard-deny patterns[/dim]"
+        )
+    finally:
+        engine.close()
+
+
+@afk_app.command("off")
+def afk_off_cmd() -> None:
+    from memex.enforcement import disable_afk_mode
+
+    settings = get_settings()
+    engine = Engine.build_default(settings)
+    try:
+        if disable_afk_mode(engine):
+            console.print("[green]AFK mode off[/green]")
+        else:
+            console.print("[dim]AFK mode was not active[/dim]")
+    finally:
+        engine.close()
+
+
+@afk_app.command("status")
+def afk_status_cmd() -> None:
+    from memex.enforcement import afk_status
+
+    settings = get_settings()
+    engine = Engine.build_default(settings)
+    try:
+        st = afk_status(engine)
+        if st is None:
+            console.print("[dim]AFK mode is off[/dim]")
+            return
+        console.print(
+            f"[green]AFK mode active[/green] until {st['expires_at']}\n"
+            f"  note: [yellow]{st['note']}[/yellow]"
+        )
+    finally:
+        engine.close()
+
+
+@hook_app.command("pre-tool-gate")
+def hook_pre_tool_gate() -> None:
+    """PreToolUse hook — consult should_approve and emit Claude Code's
+    permissionDecision JSON. This is what gates dangerous tools without
+    bothering the user when memex has a policy stored, AND blocks
+    catastrophic patterns even when the user is AFK.
+
+    Output shapes:
+      approve → {"permissionDecision": "allow", "permissionDecisionReason": "..."}
+      deny    → {"permissionDecision": "deny",  "permissionDecisionReason": "..."}
+      ask     → no output (default user prompt fires)
+    """
+    event = _read_hook_stdin()
+    tool_name = event.get("tool_name")
+    if not tool_name or not isinstance(tool_name, str):
+        return
+    tool_input = event.get("tool_input") or {}
+
+    settings = get_settings()
+    try:
+        from memex.enforcement import ApprovalDecision, should_approve
+        engine = Engine.build_default(settings)
+    except Exception as e:  # noqa: BLE001
+        log = logging.getLogger(__name__)
+        log.warning("hook pre-tool-gate: engine init failed: %s", e)
+        return
+    try:
+        match = should_approve(
+            engine, tool_name=tool_name, tool_input=tool_input,
+        )
+    except Exception as e:  # noqa: BLE001
+        log = logging.getLogger(__name__)
+        log.warning("hook pre-tool-gate: should_approve failed: %s", e)
+        return
+    finally:
+        engine.close()
+
+    if match.decision == ApprovalDecision.approve:
+        _emit_hook_output({
+            "permissionDecision": "allow",
+            "permissionDecisionReason": f"memex: {match.reason}",
+        })
+    elif match.decision == ApprovalDecision.deny:
+        _emit_hook_output({
+            "permissionDecision": "deny",
+            "permissionDecisionReason": f"memex blocked: {match.reason}",
+        })
+    # ask → no output
 
 
 if __name__ == "__main__":

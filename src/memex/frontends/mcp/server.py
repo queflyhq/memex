@@ -589,6 +589,80 @@ class MCPServer:
             }
 
         @mcp.tool()
+        def should_approve_tool(
+            tool_name: str,
+            tool_input: dict[str, Any] | None = None,
+        ) -> dict[str, Any]:
+            """Layer-4 enforcement check. Consults stored approval
+            policies (and AFK mode + hard-deny) to decide whether a
+            given tool call should be auto-approved, auto-denied, or
+            asked of the user.
+
+            Use this BEFORE executing a sensitive tool when the AI
+            wants to know "would the user have already authorized
+            this?" or to surface to the user "memex would block this."
+
+            RETURNS:
+              {
+                "decision": "approve" | "deny" | "ask",
+                "policy_id": "<concept id of the matched policy, or
+                              'builtin:hard_deny' for built-in patterns,
+                              or '' when ask>",
+                "reason": "<short string for surfacing to user/LLM>",
+              }
+            """
+            from memex.enforcement import should_approve as _should_approve
+            try:
+                m = _should_approve(
+                    engine, tool_name=tool_name,
+                    tool_input=tool_input or {},
+                )
+            except Exception as e:  # noqa: BLE001
+                return {"decision": "ask", "policy_id": "", "reason": f"error: {e}"}
+            return m.to_dict()
+
+        @mcp.tool()
+        def enable_afk_mode(
+            duration_hours: float = 4.0,
+            note: str = "",
+        ) -> dict[str, Any]:
+            """Flip memex into AFK mode for `duration_hours`. Auto-approves
+            every tool call (except hard-deny) and audit-logs every
+            decision. Use when the user explicitly says "work non-stop
+            on the plan, I'll review when I'm back."
+
+            Hard-deny patterns are NEVER bypassed — `rm -rf /`,
+            force-push to main, DROP DATABASE, kubectl delete on
+            production, --no-verify commits — all still rejected.
+
+            RETURNS:
+              {"id": "<flag id>", "expires_at": "<iso>", "note": "...",
+               "duration_hours": <float>}
+            """
+            from memex.enforcement import enable_afk_mode as _enable_afk
+            flag = _enable_afk(engine, duration_hours=duration_hours, note=note)
+            return {
+                "id": flag.id,
+                "expires_at": flag.metadata.get("expires_at"),
+                "note": flag.metadata.get("note"),
+                "duration_hours": flag.metadata.get("duration_hours"),
+            }
+
+        @mcp.tool()
+        def disable_afk_mode() -> dict[str, Any]:
+            """Turn off AFK mode. Returns {"disabled": True} when AFK was
+            active, {"disabled": False} when it wasn't."""
+            from memex.enforcement import disable_afk_mode as _disable_afk
+            return {"disabled": _disable_afk(engine)}
+
+        @mcp.tool()
+        def afk_status() -> dict[str, Any] | None:
+            """Return AFK mode status — None when off, or {id, started_at,
+            expires_at, note, duration_hours} when active."""
+            from memex.enforcement import afk_status as _afk_status
+            return _afk_status(engine)
+
+        @mcp.tool()
         def list_secrets() -> list[dict[str, Any]]:
             """List every secret in the OS-keychain-backed vault.
 
