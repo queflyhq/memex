@@ -801,6 +801,18 @@ def hooks_install(
 
     block = {
         "hooks": {
+            "SessionStart": [
+                {
+                    "matcher": "*",
+                    "hooks": [
+                        # One-shot per session: inject memex preamble so Claude
+                        # boots with full awareness of installed skills, active
+                        # constraints, AFK state, recent corrections, and the
+                        # 'use mcp__memex__add_task not TodoWrite' protocol.
+                        {"type": "command", "command": "memex hook session-start"}
+                    ],
+                }
+            ],
             "UserPromptSubmit": [
                 {
                     "matcher": "*",
@@ -2011,6 +2023,21 @@ def hook_user_prompt(
         return
 
     if additional_context:
+        # Episodic stamp so the dashboard can show 'tokens auto-injected
+        # this session' — closes the loop on 'are we saving tokens'.
+        try:
+            with MemexClient(base_url=url, auth_token=settings.auth_token, timeout=2.0) as c2:
+                c2.observe(
+                    kind="context_injected",
+                    actor=actor,
+                    payload={
+                        "source": "user-prompt",
+                        "chars": len(additional_context),
+                        "est_tokens": len(additional_context) // 4,
+                    },
+                )
+        except Exception:  # noqa: BLE001
+            pass
         _emit_hook_output({"additionalContext": additional_context})
 
 
@@ -2086,6 +2113,170 @@ def _format_recall_for_context(result: dict | object) -> str:
         reason = d.get("degraded_reason") or ""
         lines.append(f"[memex degraded: {reason}]")
     return "\n".join(lines)
+
+
+@hook_app.command("session-start")
+def hook_session_start(
+    budget_tokens: Annotated[int, typer.Option(
+        "--budget", help="Soft cap on injected preamble length.",
+    )] = 1200,
+) -> None:
+    """SessionStart hook — inject a memex-aware preamble at the top of
+    every Claude Code session so the model knows: which tools memex
+    exposes, which skills are installed, which constraints/corrections
+    govern this user, whether AFK is on, and the must-follow protocol
+    (recall first, observe corrections, use memex add_task not TodoWrite).
+
+    Wires via:
+      "SessionStart": [{"matcher": "*",
+                         "hooks": [{"type": "command",
+                                    "command": "memex hook session-start"}]}]
+    """
+    import json as _json
+    from datetime import datetime as _dt, timezone as _tz
+
+    settings = get_settings()
+    try:
+        from memex.frontends.mcp.client import MemexClient
+        from memex.frontends.mcp.daemon import (
+            daemon_url, ensure_daemon, is_daemon_alive,
+        )
+        url = daemon_url(settings)
+        if not settings.daemon_url and not is_daemon_alive(url, settings.auth_token):
+            url = ensure_daemon(settings)
+    except Exception as e:  # noqa: BLE001
+        log = logging.getLogger(__name__)
+        log.warning("hook session-start: daemon unreachable: %s", e)
+        return
+
+    parts: list[str] = ["[memex session preamble — your persistent memory is active]"]
+
+    # ---- 1. Protocol -----------------------------------------------------
+    # Hard rules the model should treat as ambient instructions every turn.
+    parts.append(
+        "\nProtocol:\n"
+        "  • RECALL FIRST: before saying 'I don't know X', call mcp__memex__recall(query=...).\n"
+        "  • REMEMBER AFTER: when the user states a decision, constraint, or fact, "
+        "call mcp__memex__add_node(name, kind='decision'|'constraint'|'fact', description).\n"
+        "  • OBSERVE CORRECTIONS: when the user corrects you, call "
+        "mcp__memex__observe(kind='user_correction', payload={snippet, why}).\n"
+        "  • USE TASKS, NOT TodoWrite: track persistent work via mcp__memex__add_task / "
+        "update_task — they survive across sessions.\n"
+        "  • VALIDATE BEFORE GENERATING: when work touches a registered skill domain, "
+        "call mcp__memex__validate(skill=<name>) and self-attest the checks."
+    )
+
+    # ---- 2. AFK + enforcement state -------------------------------------
+    try:
+        with MemexClient(base_url=url, auth_token=settings.auth_token, timeout=2.5) as c:
+            try:
+                afk = c._http.get("/afk").json()
+            except Exception:  # noqa: BLE001
+                afk = {"active": False}
+            if afk.get("active"):
+                until = afk.get("expires_at") or "—"
+                note = afk.get("note") or ""
+                parts.append(
+                    f"\nAFK MODE IS ON until {until}. {note}\n"
+                    "  → Tool calls auto-approve via the PreToolUse hook unless they hit a hard-deny pattern.\n"
+                    "  → Don't ask the user before running standard read / search / edit / git tools — proceed."
+                )
+            else:
+                parts.append("\nAFK is off — defer to standard PreToolUse policy / user prompts.")
+
+            # ---- 3. Active corrections + constraints ------------------
+            recent_corr = c.recall(
+                query="user correction rule from now on",
+                budget_tokens=300, expand_hops=0,
+            )
+            corr_nodes = []
+            try:
+                corr_d = recent_corr.to_dict() if hasattr(recent_corr, "to_dict") else recent_corr
+                corr_nodes = corr_d.get("nodes", []) if isinstance(corr_d, dict) else []
+            except Exception:  # noqa: BLE001
+                pass
+            constraint_nodes = c.find_by_kind("constraint")
+            if constraint_nodes:
+                parts.append("\nActive constraints (must hold):")
+                for n in constraint_nodes[:10]:
+                    desc = (n.description or "").strip().split("\n", 1)[0][:200]
+                    parts.append(f"  • {n.name} — {desc}")
+
+            # ---- 4. Recent decisions ----------------------------------
+            decision_nodes = c.find_by_kind("decision")
+            if decision_nodes:
+                # Prefer most-recently-confirmed / created.
+                decision_nodes_sorted = sorted(
+                    decision_nodes,
+                    key=lambda d: (d.last_confirmed_at or d.created_at or _dt.now(_tz.utc)),
+                    reverse=True,
+                )
+                parts.append("\nRecent decisions (architectural commitments):")
+                for n in decision_nodes_sorted[:6]:
+                    desc = (n.description or "").strip().split("\n", 1)[0][:200]
+                    parts.append(f"  • {n.name} — {desc}")
+
+            # ---- 5. User profile + skills installed -------------------
+            people = c.find_by_kind("person")
+            if people:
+                p = people[0]
+                desc = (p.description or "").strip().split("\n", 1)[0][:200]
+                parts.append(f"\nUser: {p.name} — {desc}")
+
+            try:
+                skills = c.list_skills()
+                if skills:
+                    parts.append("\nInstalled skills (call validate(skill=…) when relevant):")
+                    for s in skills[:12]:
+                        bundle = s.get("name") or s.get("skill") or "?"
+                        approaches = s.get("approaches") or []
+                        if approaches:
+                            parts.append(
+                                f"  • {bundle} → " + ", ".join(a.get("name", "?") for a in approaches[:4])
+                            )
+                        else:
+                            parts.append(f"  • {bundle}")
+            except Exception:  # noqa: BLE001
+                pass
+
+            # ---- 6. Fresh corrections (from recall semantic match) ---
+            if corr_nodes:
+                parts.append(
+                    "\nRecent feedback the user has given (don't repeat the same mistakes):"
+                )
+                for n in corr_nodes[:5]:
+                    name = n.get("name") if isinstance(n, dict) else getattr(n, "name", "?")
+                    desc = (
+                        n.get("description") if isinstance(n, dict)
+                        else getattr(n, "description", "")
+                    )
+                    desc = (desc or "").strip().split("\n", 1)[0][:200]
+                    parts.append(f"  • {name}: {desc}")
+
+    except Exception as e:  # noqa: BLE001
+        log = logging.getLogger(__name__)
+        log.warning("hook session-start: build preamble failed: %s", e)
+
+    text = "\n".join(parts)
+    # Soft cap so we don't dump 10k tokens of constraints into every session.
+    if len(text) > budget_tokens * 4:  # ~4 chars per token, conservative
+        text = text[: budget_tokens * 4] + "\n[truncated — open the desktop app for full memory]"
+
+    if text.strip():
+        try:
+            with MemexClient(base_url=url, auth_token=settings.auth_token, timeout=2.0) as c2:
+                c2.observe(
+                    kind="context_injected",
+                    actor="agent",
+                    payload={
+                        "source": "session-start",
+                        "chars": len(text),
+                        "est_tokens": len(text) // 4,
+                    },
+                )
+        except Exception:  # noqa: BLE001
+            pass
+        _emit_hook_output({"additionalContext": text})
 
 
 @hook_app.command("post-edit")

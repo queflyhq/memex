@@ -95,6 +95,12 @@
     .sort((a, b) => b.total - a.total);
 
   // ----- formatting helpers -----
+  function fmtTokens(n: number | undefined): string {
+    if (n == null || isNaN(n)) return "0";
+    if (n < 1000) return String(n);
+    if (n < 1_000_000) return (n / 1000).toFixed(1) + "k";
+    return (n / 1_000_000).toFixed(2) + "M";
+  }
   function fmt(n: number | undefined): string {
     if (n == null) return "—";
     return n.toLocaleString();
@@ -282,7 +288,17 @@
         <div class="metric">
           <div class="metric-num purple">{fmt(imp.user_corrections)}</div>
           <div class="metric-label">corrections captured</div>
-          <div class="metric-hint">rules that survive across sessions · explicit observe(user_correction)</div>
+          <div class="metric-hint">rules that survive across sessions · auto-detected from prompts</div>
+        </div>
+      </div>
+      <div class="metric-row" style="margin-top: 14px;">
+        <div class="metric">
+          <div class="metric-num green">{fmtTokens(imp.tokens_injected)}</div>
+          <div class="metric-label">tokens auto-injected to Claude</div>
+          <div class="metric-hint">
+            context the AI got for free across {fmt(imp.context_injections)} hook fires
+            — you didn't have to re-explain
+          </div>
         </div>
       </div>
     </section>

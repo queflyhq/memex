@@ -272,7 +272,25 @@ def _compute_stats(
         ),
         "sources_indexed": events_by_kind.get("source_indexed", 0),
         "consolidations": events_by_kind.get("consolidation_run", 0),
+        # Tokens auto-injected via SessionStart + UserPromptSubmit hooks —
+        # context the user didn't have to type and the AI didn't have to
+        # re-derive via tool calls. Counted from context_injected events
+        # whose payload.est_tokens is the char-count / 4 estimate.
+        "context_injections": events_by_kind.get("context_injected", 0),
     }
+    # Sum est_tokens directly from context_injected payloads — events_by_kind
+    # only counts how many fired; the total tokens needs payload aggregation.
+    token_sql = (
+        "SELECT coalesce(sum(cast(json_extract(payload, '$.est_tokens') AS BIGINT)), 0) "
+        "FROM events WHERE kind = 'context_injected'"
+    )
+    token_params: list[Any] = []
+    if window_hours is not None and window_hours > 0:
+        token_sql += " AND timestamp >= ?"
+        token_params.append(datetime.now(timezone.utc) - timedelta(hours=window_hours))
+    with epi_lock:
+        token_sum = int(epi_conn.execute(token_sql, token_params).fetchone()[0] or 0)
+    impact_tiles["tokens_injected"] = token_sum
 
     # Per-actor by-kind breakdown — also via SQL for volume safety.
     by_actor: dict[str, dict[str, int]] = {}
