@@ -332,7 +332,9 @@ def _store_symbol(
     file_id: str,
     source_id: str,
 ) -> Concept:
-    description = chunk.signature
+    # Description prefers the docstring (richer recall + embeddings) and
+    # falls back to the signature when the symbol has no doc.
+    description = chunk.docstring.strip() if chunk.docstring else chunk.signature
     metadata = {
         "source_id": source_id,
         "file_id": file_id,
@@ -343,6 +345,13 @@ def _store_symbol(
         "language": chunk.language,
         "parent_symbol_name": chunk.parent_symbol,
         "body": chunk.body[:8000],  # cap for sane storage; full body re-readable from disk
+        # Doc + annotations — populated when the per-language extractor
+        # produces them. Empty list / None when not available.
+        "docstring": chunk.docstring,
+        "annotations": chunk.annotations,
+        # Surface annotation names as flat list for quick filtering — e.g.
+        # "all symbols with @RestController" without parsing the dicts.
+        "annotation_names": [a["name"] for a in chunk.annotations],
         **chunk.metadata,
     }
     sym = engine.add(

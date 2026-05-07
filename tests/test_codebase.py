@@ -486,6 +486,72 @@ def test_link_cross_repo_dry_run_writes_no_edges(engine: Engine, tmp_path: Path)
     assert same_edges == []
 
 
+# ---- docstrings + annotations ------------------------------------------------
+
+
+def test_python_docstring_and_decorator_extraction(engine: Engine, tmp_path: Path):
+    code_root = tmp_path / "demo-pkg"
+    code_root.mkdir()
+    (code_root / "api.py").write_text(
+        textwrap.dedent('''
+            from fastapi import APIRouter
+            router = APIRouter()
+
+            @router.post("/v1/auth/login")
+            def login(payload):
+                """Authenticate a user and return a JWT token."""
+                return {"ok": True}
+        ''').strip(),
+        encoding="utf-8",
+    )
+    src = add_source(engine, code_root)
+    index_source(engine, src.id)
+
+    login = _by_name(engine, "login", NodeKind.symbol)
+    assert login.metadata["docstring"] is not None
+    assert "Authenticate a user" in login.metadata["docstring"]
+    annot_names = login.metadata["annotation_names"]
+    assert any("router.post" in n for n in annot_names)
+    annots = login.metadata["annotations"]
+    assert any('"/v1/auth/login"' in a["args"] for a in annots)
+
+
+def test_java_javadoc_and_annotation_extraction(engine: Engine, tmp_path: Path):
+    """Java JavaDoc + @RestController-style annotations land on the symbol."""
+    code_root = tmp_path / "demo-pkg"
+    code_root.mkdir()
+    (code_root / "Greeter.java").write_text(
+        textwrap.dedent("""
+            package com.example;
+
+            /**
+             * Greets users by name.
+             */
+            @RestController
+            public class Greeter {
+                /** Says hello. */
+                @GetMapping("/hello")
+                public String hello() {
+                    return "hi";
+                }
+            }
+        """).strip(),
+        encoding="utf-8",
+    )
+    src = add_source(engine, code_root)
+    index_source(engine, src.id)
+
+    greeter = _by_name(engine, "Greeter", NodeKind.symbol)
+    assert greeter.metadata["docstring"] is not None
+    assert "Greets users by name" in greeter.metadata["docstring"]
+    assert "RestController" in greeter.metadata["annotation_names"]
+
+    hello = _by_name(engine, "hello", NodeKind.symbol)
+    assert hello.metadata["docstring"] is not None
+    assert "Says hello" in hello.metadata["docstring"]
+    assert "GetMapping" in hello.metadata["annotation_names"]
+
+
 def test_unresolved_calls_dont_pollute_graph(engine: Engine, tmp_path: Path):
     """Calls to external/builtin names (e.g. `print`, `len`) shouldn't
     create dangling edges — they're left for cross-repo linker pass."""

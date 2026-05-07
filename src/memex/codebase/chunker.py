@@ -62,6 +62,11 @@ class SymbolChunk:
     # Raw reference names — resolved to edges by the indexer.
     calls: list[str] = field(default_factory=list)        # identifier names invoked in body
     extends: list[str] = field(default_factory=list)      # base class / interface names
+    # Docs + annotations — captured at chunk time for "full picture" recall.
+    docstring: str | None = None  # docstring / JavaDoc / JSDoc / godoc body
+    annotations: list[dict[str, Any]] = field(default_factory=list)
+    # ^ each annotation: {name: str, args: str, line: int}
+    #   covers Python decorators, Java annotations, TS decorators
 
 
 @dataclass(slots=True)
@@ -112,6 +117,10 @@ class LanguageRules:
     # File-level — takes (root_node, source_bytes) returning module names
     # imported by this file. Slice A.1 wires these into `imports` edges.
     extract_file_imports: Callable[[Any, bytes], list[str]] | None = None
+    # Doc + annotation extractors — pulled per-declaration. Output goes
+    # into SymbolChunk.docstring / .annotations.
+    extract_docstring: Callable[[Any, bytes], str | None] | None = None
+    extract_annotations: Callable[[Any, bytes], list[dict[str, Any]]] | None = None
 
 
 def _default_extract_name(node: Any, source: bytes) -> str | None:
@@ -360,6 +369,179 @@ def _java_extract_extends(node: Any, source: bytes) -> list[str]:
     return out
 
 
+# --- Docstring / annotation extractors ---------------------------------------
+
+
+def _strip_doc_markers(text: str) -> str:
+    """Clean a raw doc string: strip Python triple-quotes, JSDoc / JavaDoc
+    /** ... */ delimiters, leading * line markers, and excess whitespace.
+    Returns one logical doc body."""
+    s = text.strip()
+    # Triple-quoted Python
+    for q in ('"""', "'''"):
+        if s.startswith(q) and s.endswith(q) and len(s) >= 6:
+            s = s[3:-3]
+            break
+    # JSDoc / JavaDoc: /** ... */
+    if s.startswith("/**") and s.endswith("*/"):
+        s = s[3:-2]
+    elif s.startswith("/*") and s.endswith("*/"):
+        s = s[2:-2]
+    # Strip leading-* lines (JSDoc/JavaDoc convention).
+    lines = []
+    for line in s.splitlines():
+        stripped = line.lstrip()
+        if stripped.startswith("* "):
+            lines.append(stripped[2:])
+        elif stripped == "*":
+            lines.append("")
+        elif stripped.startswith("///") or stripped.startswith("//"):
+            # Go-style godoc and C# doc comments.
+            after = stripped.lstrip("/").strip()
+            lines.append(after)
+        elif stripped.startswith("#"):
+            # Bash / Python comment line within a comment block.
+            lines.append(stripped.lstrip("#").strip())
+        else:
+            lines.append(line)
+    out = "\n".join(lines).strip()
+    # Collapse 3+ blank lines to 2.
+    while "\n\n\n" in out:
+        out = out.replace("\n\n\n", "\n\n")
+    return out
+
+
+def _python_extract_docstring(node: Any, source: bytes) -> str | None:
+    """Python docstring: first string literal in the function/class body."""
+    body = node.child_by_field_name("body")
+    if body is None:
+        return None
+    for child in body.children:
+        if child.type != "expression_statement":
+            continue
+        for sub in child.children:
+            if sub.type == "string":
+                raw = _node_text(sub, source)
+                cleaned = _strip_doc_markers(raw)
+                return cleaned or None
+        # Stop after the first non-comment statement.
+        return None
+    return None
+
+
+def _python_extract_annotations(node: Any, source: bytes) -> list[dict[str, Any]]:
+    """Python decorators — siblings before the def/class via decorated_definition,
+    or `decorator` children inside the wrapping node."""
+    out: list[dict[str, Any]] = []
+    parent = node.parent
+    candidates: list[Any] = []
+    if parent is not None and parent.type == "decorated_definition":
+        for sib in parent.children:
+            if sib.type == "decorator":
+                candidates.append(sib)
+    for dec in candidates:
+        # decorator → @ + (identifier | call | attribute)
+        body = None
+        for c in dec.children:
+            if c.type in ("identifier", "attribute", "call"):
+                body = c
+                break
+        if body is None:
+            continue
+        if body.type == "call":
+            fn = body.child_by_field_name("function")
+            name = _node_text(fn, source) if fn else _node_text(body, source)
+            args_node = body.child_by_field_name("arguments")
+            args = _node_text(args_node, source) if args_node else "()"
+        else:
+            name = _node_text(body, source)
+            args = ""
+        out.append({
+            "name": name,
+            "args": args,
+            "line": dec.start_point[0] + 1,
+        })
+    return out
+
+
+def _go_extract_docstring(node: Any, source: bytes) -> str | None:
+    """Godoc convention: comments immediately preceding the declaration."""
+    lines: list[str] = []
+    sib = node.prev_named_sibling
+    while sib is not None and sib.type == "comment":
+        # Walk backwards collecting contiguous comments.
+        lines.insert(0, _node_text(sib, source))
+        sib = sib.prev_named_sibling
+    if not lines:
+        return None
+    return _strip_doc_markers("\n".join(lines)) or None
+
+
+def _js_extract_docstring(node: Any, source: bytes) -> str | None:
+    """JSDoc: a /** ... */ block immediately preceding the declaration."""
+    sib = node.prev_named_sibling
+    if sib is None or sib.type != "comment":
+        return None
+    text = _node_text(sib, source)
+    if not text.startswith("/**"):
+        return None
+    return _strip_doc_markers(text) or None
+
+
+def _js_extract_annotations(node: Any, source: bytes) -> list[dict[str, Any]]:
+    """TS decorators: `decorator` nodes inside the declaration."""
+    out: list[dict[str, Any]] = []
+    for child in node.children:
+        if child.type != "decorator":
+            continue
+        text = _node_text(child, source).lstrip("@").strip()
+        # `@Injectable()` → name="Injectable", args="()"
+        if "(" in text:
+            name, _, rest = text.partition("(")
+            args = "(" + rest
+        else:
+            name, args = text, ""
+        out.append({"name": name.strip(), "args": args.strip(), "line": child.start_point[0] + 1})
+    return out
+
+
+def _java_extract_docstring(node: Any, source: bytes) -> str | None:
+    """JavaDoc: /** ... */ immediately preceding declaration. Tree-sitter
+    Java emits these as `block_comment` siblings."""
+    sib = node.prev_named_sibling
+    if sib is None:
+        return None
+    if sib.type not in ("block_comment", "comment"):
+        return None
+    text = _node_text(sib, source)
+    if not text.startswith("/**"):
+        return None
+    return _strip_doc_markers(text) or None
+
+
+def _java_extract_annotations(node: Any, source: bytes) -> list[dict[str, Any]]:
+    """Java annotations: marker_annotation, annotation in modifiers field."""
+    out: list[dict[str, Any]] = []
+    modifiers = node.child_by_field_name("modifiers")
+    if modifiers is None:
+        for c in node.children:
+            if c.type == "modifiers":
+                modifiers = c
+                break
+    if modifiers is None:
+        return out
+    for child in modifiers.children:
+        if child.type not in ("marker_annotation", "annotation"):
+            continue
+        name_node = child.child_by_field_name("name")
+        name = _node_text(name_node, source) if name_node else ""
+        args_node = child.child_by_field_name("arguments")
+        args = _node_text(args_node, source) if args_node else ""
+        if name:
+            out.append({"name": name, "args": args, "line": child.start_point[0] + 1})
+    return out
+
+
 def _java_extract_imports(root: Any, source: bytes) -> list[str]:
     out: list[str] = []
     seen: set[str] = set()
@@ -387,6 +569,8 @@ _RULES: dict[str, LanguageRules] = {
         extract_calls=_python_extract_calls,
         extract_extends=_python_extract_extends,
         extract_file_imports=_python_extract_imports,
+        extract_docstring=_python_extract_docstring,
+        extract_annotations=_python_extract_annotations,
     ),
     "go": LanguageRules(
         name="go",
@@ -400,6 +584,9 @@ _RULES: dict[str, LanguageRules] = {
         # handled by the linker's structural-equivalence pass, not here.
         extract_extends=None,
         extract_file_imports=_go_extract_imports,
+        extract_docstring=_go_extract_docstring,
+        # Go has no annotations; struct tags surface via `metadata` if needed.
+        extract_annotations=None,
     ),
     "javascript": LanguageRules(
         name="javascript",
@@ -412,6 +599,9 @@ _RULES: dict[str, LanguageRules] = {
         extract_calls=_js_extract_calls,
         extract_extends=_js_extract_extends,
         extract_file_imports=_js_extract_imports,
+        extract_docstring=_js_extract_docstring,
+        # JS-no-decorators — most TS decorators land via the typescript rules.
+        extract_annotations=None,
     ),
     "typescript": LanguageRules(
         name="typescript",
@@ -427,6 +617,8 @@ _RULES: dict[str, LanguageRules] = {
         extract_calls=_js_extract_calls,
         extract_extends=_js_extract_extends,
         extract_file_imports=_js_extract_imports,
+        extract_docstring=_js_extract_docstring,
+        extract_annotations=_js_extract_annotations,
     ),
     "java": LanguageRules(
         name="java",
@@ -440,6 +632,8 @@ _RULES: dict[str, LanguageRules] = {
         extract_calls=_java_extract_calls,
         extract_extends=_java_extract_extends,
         extract_file_imports=_java_extract_imports,
+        extract_docstring=_java_extract_docstring,
+        extract_annotations=_java_extract_annotations,
     ),
     "bash": LanguageRules(
         name="bash",
@@ -690,6 +884,8 @@ def _walk(
                 # extractor must not abort indexing.
                 calls_out: list[str] = []
                 extends_out: list[str] = []
+                docstring_out: str | None = None
+                annotations_out: list[dict[str, Any]] = []
                 if rules.extract_calls is not None and sym_kind in (
                     "function", "method"
                 ):
@@ -704,6 +900,16 @@ def _walk(
                         extends_out = rules.extract_extends(node, source)
                     except Exception as e:  # noqa: BLE001
                         log.warning("extends extraction failed on %s: %s", name, e)
+                if rules.extract_docstring is not None:
+                    try:
+                        docstring_out = rules.extract_docstring(node, source)
+                    except Exception as e:  # noqa: BLE001
+                        log.warning("docstring extraction failed on %s: %s", name, e)
+                if rules.extract_annotations is not None:
+                    try:
+                        annotations_out = rules.extract_annotations(node, source)
+                    except Exception as e:  # noqa: BLE001
+                        log.warning("annotation extraction failed on %s: %s", name, e)
                 out.append(
                     SymbolChunk(
                         name=name,
@@ -717,6 +923,8 @@ def _walk(
                         metadata={"node_type": node.type},
                         calls=calls_out,
                         extends=extends_out,
+                        docstring=docstring_out,
+                        annotations=annotations_out,
                     )
                 )
                 # Methods inside this class get `parent_name=name`.
