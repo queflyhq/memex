@@ -798,6 +798,28 @@ def hooks_install(
     I'm a fresh session."
     """
     import json as _json
+    import shutil as _shutil
+    import sys as _sys
+
+    # On Windows, Claude Code runs hook commands via bash (Git Bash). Bare
+    # `memex` only resolves if it's on PATH; absolute Windows paths with
+    # backslashes get their backslashes eaten by bash's escape parser
+    # (so `C:\Users\…\memex.bat` becomes `C:UsersAdminmemex.bat` — silent
+    # 'command not found'). The reliable form is the forward-slash absolute
+    # path to memex.bat, which bash treats as a literal path.
+    memex_cmd = "memex"
+    if _sys.platform == "win32":
+        if _shutil.which("memex") is None:
+            # Best-effort: locate memex.bat next to the source tree.
+            candidate = (Path(__file__).resolve().parents[3] / "memex.bat")
+            if candidate.is_file():
+                memex_cmd = candidate.as_posix()  # forward slashes for bash
+            else:
+                # Fall back to `python -m memex` via the active interpreter.
+                memex_cmd = f'"{_sys.executable}" -m memex'
+
+    def _c(*args: str) -> str:
+        return f"{memex_cmd} {' '.join(args)}"
 
     block = {
         "hooks": {
@@ -809,7 +831,7 @@ def hooks_install(
                         # boots with full awareness of installed skills, active
                         # constraints, AFK state, recent corrections, and the
                         # 'use mcp__memex__add_task not TodoWrite' protocol.
-                        {"type": "command", "command": "memex hook session-start"}
+                        {"type": "command", "command": _c("hook", "session-start")}
                     ],
                 }
             ],
@@ -818,7 +840,7 @@ def hooks_install(
                     "matcher": "*",
                     "hooks": [
                         # Active guidance: recall-driven context injection for the turn.
-                        {"type": "command", "command": "memex hook user-prompt --actor=human"}
+                        {"type": "command", "command": _c("hook", "user-prompt", "--actor=human")}
                     ],
                 }
             ],
@@ -829,8 +851,8 @@ def hooks_install(
                         # Layer-4: consult policies + AFK + hard-deny.
                         # Emits permissionDecision when a policy fires;
                         # otherwise silent (default prompt path runs).
-                        {"type": "command", "command": "memex hook pre-tool-gate"},
-                        {"type": "command", "command": "memex observe-event tool_pre"},
+                        {"type": "command", "command": _c("hook", "pre-tool-gate")},
+                        {"type": "command", "command": _c("observe-event", "tool_pre")},
                     ],
                 }
             ],
@@ -838,20 +860,20 @@ def hooks_install(
                 {
                     "matcher": "TodoWrite",
                     "hooks": [
-                        {"type": "command", "command": "memex todowrite-sync"}
+                        {"type": "command", "command": _c("todowrite-sync")}
                     ],
                 },
                 {
                     "matcher": "Edit|Write|MultiEdit",
                     "hooks": [
                         # Keep codebase memory current — re-chunk the edited file.
-                        {"type": "command", "command": "memex hook post-edit"}
+                        {"type": "command", "command": _c("hook", "post-edit")}
                     ],
                 },
                 {
                     "matcher": "*",
                     "hooks": [
-                        {"type": "command", "command": "memex observe-event tool_post"}
+                        {"type": "command", "command": _c("observe-event", "tool_post")}
                     ],
                 },
             ],
@@ -859,7 +881,7 @@ def hooks_install(
                 {
                     "matcher": "*",
                     "hooks": [
-                        {"type": "command", "command": "memex observe-event turn_end"}
+                        {"type": "command", "command": _c("observe-event", "turn_end")}
                     ],
                 }
             ],
