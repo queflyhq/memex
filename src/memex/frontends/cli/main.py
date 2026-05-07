@@ -1989,6 +1989,16 @@ def hook_user_prompt(
             url = ensure_daemon(settings)
         with MemexClient(base_url=url, auth_token=settings.auth_token, timeout=3.0) as c:
             c.observe(kind="user_prompt", actor=actor, payload=payload)
+            # Auto-classify corrections — the original `user_correction`
+            # counter only ticked when an agent explicitly observed it,
+            # which never happens. Pattern-match common corrective
+            # phrasings so the dashboard reflects real friction.
+            if _looks_like_correction(prompt_text):
+                c.observe(
+                    kind="user_correction",
+                    actor=actor,
+                    payload={**payload, "auto_detected": True, "snippet": prompt_text[:240]},
+                )
             recall_result = c.recall(
                 query=prompt_text,
                 budget_tokens=budget_tokens,
@@ -2002,6 +2012,55 @@ def hook_user_prompt(
 
     if additional_context:
         _emit_hook_output({"additionalContext": additional_context})
+
+
+_CORRECTION_PATTERNS = (
+    # Negation + directive
+    "don't ", "dont ", "do not ",
+    "stop ", "no don", "no, don",
+    "never ",
+    "instead of ", "not that", "not like that", "not like this",
+    "wrong", " incorrect", "that's wrong", "thats wrong",
+    "that's not", "thats not",
+    # Course-correction
+    "actually ",
+    "i said ", "i told you ", "i meant ",
+    "no — ", "no - ", "no, ",
+    # Negative quality
+    "badly done", "is not done", "is not working",
+    "broken", "is broken", "doesn't work", "doesnt work",
+    "not working", "still not", "still asking",
+    # User feedback / preference
+    "should be ", "use ", "from now on", "going forward",
+    "prefer ", "rather than",
+    # Direct corrections of agent
+    "you should", "you shouldn't", "you should not",
+    "fix this", "fix that", "this is wrong",
+)
+
+
+def _looks_like_correction(text: str) -> bool:
+    """Heuristic — does this user prompt read like a correction or a
+    rule-from-now-on? Triggers on common negation / directive phrasings.
+
+    Conservative on purpose: false positives are cheap (one extra event
+    in the stream), false negatives are what we want to avoid since the
+    whole point of the dashboard counter is showing real friction. If the
+    prompt is short and contains *any* trigger word it counts; if it's
+    long, we require a stronger signal."""
+    if not text:
+        return False
+    t = text.lower().strip()
+    # Very short "no" / "stop" / "wrong" responses are clearly corrective.
+    if len(t) <= 12 and t in {
+        "no", "nope", "nah", "stop", "wrong", "not right",
+        "incorrect", "no don't", "no dont",
+    }:
+        return True
+    for needle in _CORRECTION_PATTERNS:
+        if needle in t:
+            return True
+    return False
 
 
 def _format_recall_for_context(result: dict | object) -> str:
