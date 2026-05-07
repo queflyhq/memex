@@ -18,17 +18,21 @@
   import Database from "./routes/Database.svelte";
   import Sources from "./routes/Sources.svelte";
   import Rules from "./routes/Rules.svelte";
+  import Secrets from "./routes/Secrets.svelte";
+  import Integrations from "./routes/Integrations.svelte";
 
   type Tab =
     | "dashboard"
+    | "activity"
     | "graph"
     | "concepts"
-    | "sources"
     | "tasks"
     | "rules"
+    | "sources"
     | "skills"
-    | "database"
-    | "activity";
+    | "integrations"
+    | "secrets"
+    | "database";
   let active: Tab = "dashboard";
   let daemonAlive = false;
   let daemonURL = "";
@@ -39,16 +43,43 @@
     daemonURL = String(status.url || "");
   });
 
-  const tabs: { id: Tab; label: string; emoji: string }[] = [
-    { id: "dashboard", label: "Dashboard", emoji: "⌂" },
-    { id: "graph", label: "Graph", emoji: "◫" },
-    { id: "concepts", label: "Concepts", emoji: "☷" },
-    { id: "sources", label: "Sources", emoji: "▸" },
-    { id: "tasks", label: "Tasks & Projects", emoji: "☑" },
-    { id: "rules", label: "Rules & AFK", emoji: "⛨" },
-    { id: "skills", label: "Skills & Embeddings", emoji: "✦" },
-    { id: "database", label: "Database", emoji: "▤" },
-    { id: "activity", label: "Activity", emoji: "⌚" },
+  const groups: { label: string; tabs: { id: Tab; label: string; emoji: string }[] }[] = [
+    {
+      label: "Overview",
+      tabs: [
+        { id: "dashboard", label: "Dashboard", emoji: "⌂" },
+        { id: "activity",  label: "Activity",  emoji: "⌚" },
+      ],
+    },
+    {
+      label: "Knowledge",
+      tabs: [
+        { id: "graph",    label: "Graph",            emoji: "◫" },
+        { id: "concepts", label: "Concepts",         emoji: "☷" },
+        { id: "tasks",    label: "Tasks & Projects", emoji: "☑" },
+        { id: "rules",    label: "Rules & AFK",      emoji: "⛨" },
+      ],
+    },
+    {
+      label: "Code",
+      tabs: [
+        { id: "sources",  label: "Sources",  emoji: "▸" },
+      ],
+    },
+    {
+      label: "Tooling",
+      tabs: [
+        { id: "skills",        label: "Skills",       emoji: "✦" },
+        { id: "integrations",  label: "Integrations", emoji: "🔗" },
+        { id: "secrets",       label: "Secrets",      emoji: "🔒" },
+      ],
+    },
+    {
+      label: "Power user",
+      tabs: [
+        { id: "database", label: "Database", emoji: "▤" },
+      ],
+    },
   ];
 </script>
 
@@ -59,14 +90,17 @@
       <span class="brand-name">memeX</span>
     </div>
     <nav>
-      {#each tabs as t}
-        <button
-          class:active={active === t.id}
-          on:click={() => (active = t.id)}
-        >
-          <span class="ico">{t.emoji}</span>
-          <span>{t.label}</span>
-        </button>
+      {#each groups as g}
+        <div class="nav-group-label">{g.label}</div>
+        {#each g.tabs as t}
+          <button
+            class:active={active === t.id}
+            on:click={() => (active = t.id)}
+          >
+            <span class="ico">{t.emoji}</span>
+            <span>{t.label}</span>
+          </button>
+        {/each}
       {/each}
     </nav>
     <div class="status">
@@ -92,6 +126,10 @@
       <Rules {GetConcepts} />
     {:else if active === "skills"}
       <Skills {GetSkills} />
+    {:else if active === "integrations"}
+      <Integrations />
+    {:else if active === "secrets"}
+      <Secrets />
     {:else if active === "database"}
       <Database />
     {:else if active === "activity"}
@@ -155,6 +193,18 @@
     flex-direction: column;
     gap: 2px;
     flex: 1;
+    overflow-y: auto;
+  }
+  .nav-group-label {
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: 0.7px;
+    color: #9ca3af;
+    font-weight: 700;
+    padding: 14px 12px 4px;
+  }
+  .nav-group-label:first-child {
+    padding-top: 0;
   }
   nav button {
     background: transparent;

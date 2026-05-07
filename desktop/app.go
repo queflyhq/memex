@@ -432,6 +432,99 @@ func (a *App) ListCodeSources() (map[string]any, error) {
 	return out, nil
 }
 
+// ListSecretsViaDaemon hits /secrets — returns the index without values.
+func (a *App) ListSecretsViaDaemon() (map[string]any, error) {
+	body, _, err := a.daemonGet("/secrets")
+	if err != nil {
+		return nil, err
+	}
+	var out map[string]any
+	if err := json.Unmarshal(body, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// PutSecret stores a secret in the OS keychain via the daemon.
+func (a *App) PutSecret(provider string, name string, value string) (map[string]any, error) {
+	body, _ := json.Marshal(map[string]any{
+		"provider": provider, "name": name, "value": value,
+	})
+	req, _ := http.NewRequestWithContext(a.ctx, "POST",
+		a.daemonURL+"/secrets", bytesReader(body))
+	a.applyAuth(req)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := a.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	rb, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		return map[string]any{"error": string(rb)}, nil
+	}
+	var out map[string]any
+	_ = json.Unmarshal(rb, &out)
+	return out, nil
+}
+
+// DeleteSecret removes a secret by provider+name.
+func (a *App) DeleteSecret(provider string, name string) (map[string]any, error) {
+	req, _ := http.NewRequestWithContext(a.ctx, "DELETE",
+		fmt.Sprintf("%s/secrets/%s/%s", a.daemonURL, provider, name), nil)
+	a.applyAuth(req)
+	resp, err := a.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	rb, _ := io.ReadAll(resp.Body)
+	var out map[string]any
+	_ = json.Unmarshal(rb, &out)
+	return out, nil
+}
+
+// RedactPreview asks the daemon what auto-redact would do to a string.
+// Does not store anything.
+func (a *App) RedactPreview(text string) (map[string]any, error) {
+	body, _ := json.Marshal(map[string]any{"text": text})
+	req, _ := http.NewRequestWithContext(a.ctx, "POST",
+		a.daemonURL+"/secrets/redact-preview", bytesReader(body))
+	a.applyAuth(req)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := a.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	rb, _ := io.ReadAll(resp.Body)
+	var out map[string]any
+	_ = json.Unmarshal(rb, &out)
+	return out, nil
+}
+
+// ListUpstreams returns the configured MCP upstreams.
+func (a *App) ListUpstreams() (map[string]any, error) {
+	body, _, err := a.daemonGet("/upstreams")
+	if err != nil {
+		return nil, err
+	}
+	var out map[string]any
+	_ = json.Unmarshal(body, &out)
+	return out, nil
+}
+
+// UpstreamCatalog returns the curated MCP catalog.
+func (a *App) UpstreamCatalog() (map[string]any, error) {
+	body, _, err := a.daemonGet("/upstreams/catalog")
+	if err != nil {
+		return nil, err
+	}
+	var out map[string]any
+	_ = json.Unmarshal(body, &out)
+	return out, nil
+}
+
 // GetHooksStatus reads ~/.claude/settings.json and reports whether memex
 // hooks are wired into Claude Code. Used by the desktop Dashboard to
 // distinguish "hooks not installed" from "hooks installed, no events yet".

@@ -16,6 +16,7 @@ from __future__ import annotations
 import logging
 from collections import Counter
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Annotated, Any
 
 from fastapi import Body, Depends, FastAPI, Header, HTTPException
@@ -420,44 +421,130 @@ class HTTPFrontend:
                 })
             return payload
 
-        @app.post("/sources/add", tags=["write"], dependencies=[Depends(check_auth)])
-        def add_source_endpoint(body: dict[str, Any] = Body(...)) -> dict[str, Any]:
-            """Register a codebase as a source and (by default) index it.
-            Lets clients (desktop, CLI-via-daemon) add sources without
-            contesting the DuckDB writer lock.
-            Body: {"path": "...", "name": null, "index_now": true}"""
-            from memex.codebase import (
-                add_source as _add_source,
-                index_source as _index_source,
-            )
-            path = body.get("path")
-            name = body.get("name")
-            index_now = bool(body.get("index_now", True))
-            if not path:
-                raise HTTPException(status_code=400, detail="missing path")
-            try:
-                src = _add_source(engine, path, name=name)
-            except Exception as e:  # noqa: BLE001
-                raise HTTPException(status_code=400, detail=f"add_source: {e}") from None
-            payload: dict[str, Any] = {
-                "id": src.id, "name": src.name,
-                "path": src.metadata.get("path"),
-                "indexed": False, "files": 0, "symbols": 0,
-                "languages": {}, "skipped_files": 0,
+        @app.get("/secrets", tags=["secrets"], dependencies=[Depends(check_auth)])
+        def secrets_list_endpoint() -> dict[str, Any]:
+            """List every registered secret handle. NEVER returns values."""
+            from memex.config import get_settings as _settings
+            from memex.secrets import SecretsStore
+            store = SecretsStore(Path(str(_settings().data_dir)) / "secrets")
+            return {
+                "secrets": [
+                    {
+                        "handle": f"secret://{r.provider}/{r.name}",
+                        "provider": r.provider,
+                        "name": r.name,
+                        "created_at": r.created_at,
+                        "last_resolved_at": r.last_resolved_at,
+                        "last_resolved_by": r.last_resolved_by,
+                    }
+                    for r in store.list()
+                ],
             }
-            if index_now:
-                try:
-                    res = _index_source(engine, src.id)
-                except Exception as e:  # noqa: BLE001
-                    raise HTTPException(status_code=500, detail=f"index_source: {e}") from None
-                payload.update({
-                    "indexed": True,
-                    "files": res.files_indexed,
-                    "symbols": res.symbols_indexed,
-                    "languages": res.languages,
-                    "skipped_files": res.skipped_files,
-                })
-            return payload
+
+        @app.post("/secrets", tags=["secrets"], dependencies=[Depends(check_auth)])
+        def secrets_put_endpoint(body: dict[str, Any] = Body(...)) -> dict[str, Any]:
+            """Store a secret in the OS keychain. Body: {provider, name, value}.
+            Value lands in keychain; never persists in any concept/event/log."""
+            from memex.config import get_settings as _settings
+            from memex.secrets import SecretsStore
+            provider = body.get("provider")
+            name = body.get("name")
+            value = body.get("value")
+            if not provider or not name or not value:
+                raise HTTPException(status_code=400,
+                                    detail="provider, name, value all required")
+            store = SecretsStore(Path(str(_settings().data_dir)) / "secrets")
+            handle = store.put(provider, name, value)
+            return {"handle": str(handle), "provider": provider, "name": name}
+
+        @app.delete("/secrets/{provider}/{name}", tags=["secrets"], dependencies=[Depends(check_auth)])
+        def secrets_delete_endpoint(provider: str, name: str) -> dict[str, Any]:
+            from memex.config import get_settings as _settings
+            from memex.secrets import SecretsStore
+            store = SecretsStore(Path(str(_settings().data_dir)) / "secrets")
+            removed = store.delete(f"secret://{provider}/{name}")
+            return {"removed": removed}
+
+        @app.post("/secrets/redact-preview", tags=["secrets"], dependencies=[Depends(check_auth)])
+        def secrets_redact_preview(body: dict[str, Any] = Body(...)) -> dict[str, Any]:
+            """Preview what auto-redact would do. Does NOT store anything."""
+            from memex.secrets.redact import _DEFAULT_PATTERNS
+            text = body.get("text", "")
+            events = []
+            redacted = text
+            for pat in _DEFAULT_PATTERNS:
+                for m in pat.pattern.finditer(text):
+                    events.append({
+                        "pattern_name": pat.name,
+                        "provider": pat.provider,
+                        "severity": pat.severity,
+                        "match_preview": m.group(0)[:8] + "…",
+                        "span": [m.start(), m.end()],
+                    })
+                redacted = pat.pattern.sub(f"<<{pat.name}>>", redacted)
+            return {
+                "redacted_text": redacted,
+                "events": events,
+                "changed": bool(events),
+            }
+
+        @app.get("/upstreams", tags=["integrations"], dependencies=[Depends(check_auth)])
+        def upstreams_list() -> dict[str, Any]:
+            """Configured upstream MCP servers + their connection status."""
+            from memex.upstreams import load_upstreams
+            cfg = load_upstreams()
+            out = []
+            for u in cfg.upstreams:
+                d = u.model_dump(mode="json")
+                # Scrub secrets from response.
+                auth = d.get("auth", {})
+                if auth and "token" in auth:
+                    auth["token"] = "<redacted>"
+                out.append(d)
+            return {"upstreams": out}
+
+        @app.get("/upstreams/catalog", tags=["integrations"], dependencies=[Depends(check_auth)])
+        def upstreams_catalog() -> dict[str, Any]:
+            """Curated catalog of installable upstream MCP servers."""
+            from memex.upstreams.catalog import load_catalog
+            return {"entries": [
+                e.model_dump(mode="json") for e in load_catalog()
+            ]}
+
+        @app.get("/hooks/status", tags=["integrations"], dependencies=[Depends(check_auth)])
+        def hooks_status() -> dict[str, Any]:
+            """Read ~/.claude/settings.json and report which Claude Code hook
+            events memex is wired into. Same shape as the desktop's
+            GetHooksStatus Wails method, but available over HTTP for any
+            client."""
+            import os
+            home = os.path.expanduser("~")
+            settings_path = os.path.join(home, ".claude", "settings.json")
+            if not os.path.exists(settings_path):
+                return {"installed": False, "reason": "settings.json not found",
+                        "settings_path": settings_path}
+            import json as _json
+            try:
+                data = _json.loads(open(settings_path, encoding="utf-8").read())
+            except Exception as e:  # noqa: BLE001
+                return {"installed": False, "reason": "parse error",
+                        "error": str(e), "settings_path": settings_path}
+            hooks_cfg = (data or {}).get("hooks", {}) or {}
+            wired: dict[str, list[str]] = {}
+            for ev, handlers in hooks_cfg.items():
+                if not isinstance(handlers, list):
+                    continue
+                for h in handlers:
+                    inner = (h or {}).get("hooks", []) or []
+                    for c in inner:
+                        cmd = (c or {}).get("command", "") or ""
+                        if "memex" in cmd:
+                            wired.setdefault(ev, []).append(cmd)
+            return {
+                "installed": bool(wired),
+                "events_wired": wired,
+                "settings_path": settings_path,
+            }
 
         @app.post("/sources/link", tags=["write"], dependencies=[Depends(check_auth)])
         def link_sources_endpoint(body: dict[str, Any] = Body(default={})) -> dict[str, Any]:
