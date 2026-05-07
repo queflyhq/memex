@@ -367,6 +367,70 @@ class MCPServer:
             return payload
 
         @mcp.tool()
+        def find_code_orphans(
+            source_id: str | None = None,
+            include_private: bool = False,
+        ) -> dict[str, Any]:
+            """Symbols with zero incoming `calls` / `extends` edges —
+            provably-unreachable code within the indexed corpus.
+
+            This is the typed-graph differentiator vs. fuzzy/RAG search:
+            "no callers" is a graph predicate that vector similarity has
+            no way to express. Use the result to surface dead-code
+            candidates for cleanup.
+
+            Caveat: cross-repo callers are NOT considered until slice B's
+            `same_as` linker runs. A symbol defined in repo A and called
+            only in repo B will appear as orphan in A until the linker
+            stitches them. Until then, treat orphan results as
+            "unreachable WITHIN this source" not "globally dead."
+
+            PARAMETERS:
+              source_id (str, optional): scope to one registered source.
+              include_private (bool, default=False): include `_`-prefixed
+                symbols (typically excluded as private internals).
+
+            RETURNS:
+              {
+                "orphans": [{name, kind, language, file, line_start,
+                             line_end, id} ...],
+                "count": <int>,
+                "scope": "single-source" | "all-sources",
+              }
+            """
+            from memex.codebase import find_orphans as _find_orphans
+
+            try:
+                orphans = _find_orphans(
+                    engine,
+                    source_id=source_id,
+                    include_private=include_private,
+                )
+            except AttributeError as e:
+                return {
+                    "orphans": [],
+                    "count": 0,
+                    "scope": "error",
+                    "error": str(e),
+                }
+            return {
+                "orphans": [
+                    {
+                        "id": c.id,
+                        "name": c.name,
+                        "kind": c.metadata.get("symbol_kind", "?"),
+                        "language": c.metadata.get("language"),
+                        "file": c.metadata.get("rel_path"),
+                        "line_start": c.metadata.get("start_line"),
+                        "line_end": c.metadata.get("end_line"),
+                    }
+                    for c in orphans
+                ],
+                "count": len(orphans),
+                "scope": "single-source" if source_id else "all-sources",
+            }
+
+        @mcp.tool()
         def add_node(
             name: str,
             description: str = "",

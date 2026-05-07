@@ -41,6 +41,13 @@ class SymbolChunk:
     Stored downstream as `Concept(kind="symbol")` with these fields landing
     in `metadata`. The `body` is also embedded into the vector store for
     similarity-based ranking, but the primary surface is the typed graph.
+
+    `calls`, `extends`, and the file-level `imports` are RAW textual names
+    captured at chunk time — the indexer resolves them against the rest of
+    the source's symbol set to create concrete `EdgeKind.calls` /
+    `EdgeKind.extends` / `EdgeKind.imports` edges. Names that don't resolve
+    (external libraries, builtins) are left dangling so cross-repo linker
+    passes (slice B) can pick them up later.
     """
 
     name: str
@@ -52,6 +59,23 @@ class SymbolChunk:
     parent_symbol: str | None = None  # name of parent class/struct, if nested
     language: str = ""
     metadata: dict[str, Any] = field(default_factory=dict)
+    # Raw reference names — resolved to edges by the indexer.
+    calls: list[str] = field(default_factory=list)        # identifier names invoked in body
+    extends: list[str] = field(default_factory=list)      # base class / interface names
+
+
+@dataclass(slots=True)
+class FileImports:
+    """File-level imports — feeds `EdgeKind.imports` edges in the indexer.
+
+    Each entry is the raw module/file name as it appeared in the source
+    (`import os.path` → `"os.path"`; `from foo.bar import baz` → `"foo.bar"`;
+    Go `"github.com/x/y"` → `"github.com/x/y"`). The indexer resolves
+    relative imports to in-source files and external imports stay dangling.
+    """
+
+    file_path: str
+    raw_imports: list[str] = field(default_factory=list)
 
 
 # ---- Per-language rules ------------------------------------------------------
@@ -79,6 +103,15 @@ class LanguageRules:
     extract_name: Callable[[Any, bytes], str | None] | None = None
     # Optional override for signature extraction (the line(s) up to body).
     extract_signature: Callable[[Any, bytes], str] | None = None
+    # Per-language reference extractors — produce raw identifier names
+    # that the indexer resolves to edges. Each takes (declaration_node,
+    # source_bytes) and returns a list of names. None = no extraction
+    # (slice A.0 fallback for languages we haven't taught yet).
+    extract_calls: Callable[[Any, bytes], list[str]] | None = None
+    extract_extends: Callable[[Any, bytes], list[str]] | None = None
+    # File-level — takes (root_node, source_bytes) returning module names
+    # imported by this file. Slice A.1 wires these into `imports` edges.
+    extract_file_imports: Callable[[Any, bytes], list[str]] | None = None
 
 
 def _default_extract_name(node: Any, source: bytes) -> str | None:
@@ -111,6 +144,237 @@ def _default_extract_signature(node: Any, source: bytes) -> str:
     return " ".join(sig.split())
 
 
+# ---- Reference extractors (per language) ------------------------------------
+
+
+def _node_text(node: Any, source: bytes) -> str:
+    return source[node.start_byte:node.end_byte].decode("utf-8", errors="replace")
+
+
+def _walk_for_node_types(node: Any, types: frozenset[str]) -> list[Any]:
+    """Iterative DFS collecting every descendant whose `.type` is in `types`."""
+    out: list[Any] = []
+    stack = [node]
+    while stack:
+        n = stack.pop()
+        if n.type in types:
+            out.append(n)
+        # Walk children in reverse so output is left-to-right.
+        for c in reversed(n.children):
+            stack.append(c)
+    return out
+
+
+# --- Python ---
+
+
+def _python_extract_calls(node: Any, source: bytes) -> list[str]:
+    """Identifiers invoked inside a function/method body. Returns simple
+    names (`foo`) and dotted heads (`obj.method` → `method`) — the indexer
+    resolves these against in-source symbol names; unresolved stay
+    dangling and feed cross-repo linker hints."""
+    calls: list[str] = []
+    seen: set[str] = set()
+    body = node.child_by_field_name("body")
+    if body is None:
+        return calls
+    for call in _walk_for_node_types(body, frozenset({"call"})):
+        fn = call.child_by_field_name("function")
+        if fn is None:
+            continue
+        if fn.type == "identifier":
+            name = _node_text(fn, source)
+        elif fn.type == "attribute":
+            attr = fn.child_by_field_name("attribute")
+            name = _node_text(attr, source) if attr else _node_text(fn, source)
+        else:
+            name = _node_text(fn, source).split(".")[-1]
+        if name and name not in seen:
+            seen.add(name)
+            calls.append(name)
+    return calls
+
+
+def _python_extract_extends(node: Any, source: bytes) -> list[str]:
+    """Class superclasses — Python `class Foo(Bar, Mixin):`."""
+    out: list[str] = []
+    sclasses = node.child_by_field_name("superclasses")
+    if sclasses is None:
+        return out
+    for child in sclasses.children:
+        if child.type == "identifier":
+            out.append(_node_text(child, source))
+        elif child.type == "attribute":
+            out.append(_node_text(child, source).split(".")[-1])
+    return out
+
+
+def _python_extract_imports(root: Any, source: bytes) -> list[str]:
+    """Module-level imports: `import x`, `from x import y` → ["x"]."""
+    out: list[str] = []
+    seen: set[str] = set()
+    for child in root.children:
+        if child.type == "import_statement":
+            # `import x.y` or `import x as a`
+            for n in child.children:
+                if n.type == "dotted_name":
+                    name = _node_text(n, source)
+                    if name and name not in seen:
+                        seen.add(name); out.append(name)
+        elif child.type == "import_from_statement":
+            mod = child.child_by_field_name("module_name")
+            if mod is not None:
+                name = _node_text(mod, source)
+                if name and name not in seen:
+                    seen.add(name); out.append(name)
+    return out
+
+
+# --- Go ---
+
+
+def _go_extract_calls(node: Any, source: bytes) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    body = node.child_by_field_name("body")
+    if body is None:
+        return out
+    for call in _walk_for_node_types(body, frozenset({"call_expression"})):
+        fn = call.child_by_field_name("function")
+        if fn is None:
+            continue
+        if fn.type == "identifier":
+            name = _node_text(fn, source)
+        elif fn.type == "selector_expression":
+            field = fn.child_by_field_name("field")
+            name = _node_text(field, source) if field else _node_text(fn, source).split(".")[-1]
+        else:
+            name = _node_text(fn, source).split(".")[-1]
+        if name and name not in seen:
+            seen.add(name); out.append(name)
+    return out
+
+
+def _go_extract_imports(root: Any, source: bytes) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for spec in _walk_for_node_types(root, frozenset({"import_spec"})):
+        path_node = spec.child_by_field_name("path")
+        if path_node is None:
+            for c in spec.children:
+                if c.type == "interpreted_string_literal":
+                    path_node = c
+                    break
+        if path_node is None:
+            continue
+        text = _node_text(path_node, source).strip('"')
+        if text and text not in seen:
+            seen.add(text); out.append(text)
+    return out
+
+
+# --- JS / TS ---
+
+
+def _js_extract_calls(node: Any, source: bytes) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    body = node.child_by_field_name("body")
+    if body is None:
+        return out
+    for call in _walk_for_node_types(body, frozenset({"call_expression"})):
+        fn = call.child_by_field_name("function")
+        if fn is None:
+            continue
+        if fn.type == "identifier":
+            name = _node_text(fn, source)
+        elif fn.type == "member_expression":
+            prop = fn.child_by_field_name("property")
+            name = _node_text(prop, source) if prop else _node_text(fn, source).split(".")[-1]
+        else:
+            name = _node_text(fn, source).split(".")[-1]
+        if name and name not in seen:
+            seen.add(name); out.append(name)
+    return out
+
+
+def _js_extract_extends(node: Any, source: bytes) -> list[str]:
+    out: list[str] = []
+    for child in node.children:
+        if child.type == "class_heritage":
+            for n in child.children:
+                if n.type == "identifier":
+                    out.append(_node_text(n, source))
+                elif n.type in ("member_expression", "type_identifier"):
+                    out.append(_node_text(n, source).split(".")[-1])
+    return out
+
+
+def _js_extract_imports(root: Any, source: bytes) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for stmt in _walk_for_node_types(root, frozenset({"import_statement"})):
+        src_node = stmt.child_by_field_name("source")
+        if src_node is None:
+            for c in stmt.children:
+                if c.type == "string":
+                    src_node = c; break
+        if src_node is None:
+            continue
+        text = _node_text(src_node, source).strip("'\"")
+        if text and text not in seen:
+            seen.add(text); out.append(text)
+    return out
+
+
+# --- Java ---
+
+
+def _java_extract_calls(node: Any, source: bytes) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    body = node.child_by_field_name("body")
+    if body is None:
+        return out
+    for call in _walk_for_node_types(body, frozenset({"method_invocation"})):
+        name_node = call.child_by_field_name("name")
+        if name_node is None:
+            continue
+        name = _node_text(name_node, source)
+        if name and name not in seen:
+            seen.add(name); out.append(name)
+    return out
+
+
+def _java_extract_extends(node: Any, source: bytes) -> list[str]:
+    out: list[str] = []
+    super_node = node.child_by_field_name("superclass")
+    if super_node is not None:
+        for c in super_node.children:
+            if c.type == "type_identifier":
+                out.append(_node_text(c, source))
+    iface_node = node.child_by_field_name("interfaces")
+    if iface_node is not None:
+        for c in _walk_for_node_types(iface_node, frozenset({"type_identifier"})):
+            out.append(_node_text(c, source))
+    return out
+
+
+def _java_extract_imports(root: Any, source: bytes) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for child in root.children:
+        if child.type != "import_declaration":
+            continue
+        text = _node_text(child, source).strip()
+        # Strip leading "import" + trailing ";"
+        text = text.removeprefix("import").strip().rstrip(";").strip()
+        text = text.removeprefix("static").strip()
+        if text and text not in seen:
+            seen.add(text); out.append(text)
+    return out
+
+
 # Per-language rule tables. Languages absent from this dict fall back to
 # whole-file chunking (one symbol per file).
 _RULES: dict[str, LanguageRules] = {
@@ -120,6 +384,9 @@ _RULES: dict[str, LanguageRules] = {
             "class_definition": "class",
             "function_definition": "function",  # promoted to "method" when inside a class
         },
+        extract_calls=_python_extract_calls,
+        extract_extends=_python_extract_extends,
+        extract_file_imports=_python_extract_imports,
     ),
     "go": LanguageRules(
         name="go",
@@ -128,6 +395,11 @@ _RULES: dict[str, LanguageRules] = {
             "method_declaration": "method",
             "type_declaration": "type_alias",  # struct/interface differentiated below
         },
+        extract_calls=_go_extract_calls,
+        # Go doesn't have classical inheritance — embedded interfaces are
+        # handled by the linker's structural-equivalence pass, not here.
+        extract_extends=None,
+        extract_file_imports=_go_extract_imports,
     ),
     "javascript": LanguageRules(
         name="javascript",
@@ -137,6 +409,9 @@ _RULES: dict[str, LanguageRules] = {
             "method_definition": "method",
             "lexical_declaration": "const",  # filtered to functions/classes only below
         },
+        extract_calls=_js_extract_calls,
+        extract_extends=_js_extract_extends,
+        extract_file_imports=_js_extract_imports,
     ),
     "typescript": LanguageRules(
         name="typescript",
@@ -149,6 +424,9 @@ _RULES: dict[str, LanguageRules] = {
             "enum_declaration": "enum",
             "lexical_declaration": "const",
         },
+        extract_calls=_js_extract_calls,
+        extract_extends=_js_extract_extends,
+        extract_file_imports=_js_extract_imports,
     ),
     "java": LanguageRules(
         name="java",
@@ -159,6 +437,9 @@ _RULES: dict[str, LanguageRules] = {
             "constructor_declaration": "method",
             "enum_declaration": "enum",
         },
+        extract_calls=_java_extract_calls,
+        extract_extends=_java_extract_extends,
+        extract_file_imports=_java_extract_imports,
     ),
     "bash": LanguageRules(
         name="bash",
@@ -288,34 +569,51 @@ def _get_parser(language: str) -> Any | None:
 # ---- Public API --------------------------------------------------------------
 
 
-def chunk_file(path: str | Path, content: bytes | None = None) -> list[SymbolChunk]:
-    """Parse a source file and return its typed symbol chunks.
+@dataclass(slots=True)
+class FileAnalysis:
+    """Result of chunking one file: typed symbols plus file-level imports."""
 
-    Returns an empty list if the language is unsupported or the parser
+    chunks: list[SymbolChunk]
+    imports: list[str]
+    language: str | None
+
+
+def chunk_file(path: str | Path, content: bytes | None = None) -> list[SymbolChunk]:
+    """Parse a file and return its typed symbol chunks. See `analyze_file`
+    for the richer return shape that includes file-level imports."""
+    return analyze_file(path, content).chunks
+
+
+def analyze_file(path: str | Path, content: bytes | None = None) -> FileAnalysis:
+    """Parse a source file and return its typed symbol chunks + file-level
+    imports. The single entry point preferred by the indexer.
+
+    Returns an empty result if the language is unsupported or the parser
     fails. A parsing failure is logged but not raised — codebase indexing
     must keep going across thousands of files.
     """
     p = Path(path)
     language = detect_language(p)
     if language is None:
-        return []
+        return FileAnalysis(chunks=[], imports=[], language=None)
     if content is None:
         try:
             content = p.read_bytes()
         except OSError as e:
             log.warning("read %s failed: %s", p, e)
-            return []
+            return FileAnalysis(chunks=[], imports=[], language=language)
 
     # Custom extractors (YAML, Svelte) bypass the AST walk.
     if language in _CUSTOM_EXTRACTORS:
-        return _CUSTOM_EXTRACTORS[language](p, content, language)
+        chunks = _CUSTOM_EXTRACTORS[language](p, content, language)
+        return FileAnalysis(chunks=chunks, imports=[], language=language)
 
     rules = _RULES.get(language)
     if rules is None:
         # Fallback: file-as-one-chunk (lets unsupported langs still appear
         # in recall — they just don't have rich symbol structure).
         text = content.decode("utf-8", errors="replace")
-        return [
+        chunks = [
             SymbolChunk(
                 name=p.stem,
                 symbol_kind="function",  # generic — matches "search by name"
@@ -326,20 +624,29 @@ def chunk_file(path: str | Path, content: bytes | None = None) -> list[SymbolChu
                 language=language,
             )
         ]
+        return FileAnalysis(chunks=chunks, imports=[], language=language)
 
     parser = _get_parser(language)
     if parser is None:
-        return []
+        return FileAnalysis(chunks=[], imports=[], language=language)
     try:
         tree = parser.parse(content)
     except Exception as e:  # noqa: BLE001
         log.warning("tree-sitter parse %s failed: %s", p, e)
-        return []
+        return FileAnalysis(chunks=[], imports=[], language=language)
 
-    chunks: list[SymbolChunk] = []
+    chunks_out: list[SymbolChunk] = []
     _walk(tree.root_node, content, rules, parent_name=None, parent_kind=None,
-          out=chunks)
-    return chunks
+          out=chunks_out)
+
+    file_imports: list[str] = []
+    if rules.extract_file_imports is not None:
+        try:
+            file_imports = rules.extract_file_imports(tree.root_node, content)
+        except Exception as e:  # noqa: BLE001
+            log.warning("import extraction %s failed: %s", p, e)
+
+    return FileAnalysis(chunks=chunks_out, imports=file_imports, language=language)
 
 
 def _walk(
@@ -377,6 +684,26 @@ def _walk(
                 body_text = source[node.start_byte:node.end_byte].decode(
                     "utf-8", errors="replace"
                 )
+                # Per-language reference extraction. Calls live on
+                # function/method bodies; extends on class/interface
+                # declarations. Failures are logged + tolerated — a bad
+                # extractor must not abort indexing.
+                calls_out: list[str] = []
+                extends_out: list[str] = []
+                if rules.extract_calls is not None and sym_kind in (
+                    "function", "method"
+                ):
+                    try:
+                        calls_out = rules.extract_calls(node, source)
+                    except Exception as e:  # noqa: BLE001
+                        log.warning("calls extraction failed on %s: %s", name, e)
+                if rules.extract_extends is not None and sym_kind in (
+                    "class", "interface"
+                ):
+                    try:
+                        extends_out = rules.extract_extends(node, source)
+                    except Exception as e:  # noqa: BLE001
+                        log.warning("extends extraction failed on %s: %s", name, e)
                 out.append(
                     SymbolChunk(
                         name=name,
@@ -388,6 +715,8 @@ def _walk(
                         parent_symbol=parent_name,
                         language=rules.name,
                         metadata={"node_type": node.type},
+                        calls=calls_out,
+                        extends=extends_out,
                     )
                 )
                 # Methods inside this class get `parent_name=name`.

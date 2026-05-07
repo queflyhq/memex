@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from memex.codebase.chunker import SymbolChunk, chunk_file
+from memex.codebase.chunker import SymbolChunk, analyze_file
 from memex.codebase.detect import detect_language
 from memex.codebase.sources import mark_indexed
 from memex.core.schema import Concept, EdgeKind, NodeKind, Source as SourceActor
@@ -59,6 +59,17 @@ def _walk_files(root: Path) -> list[Path]:
     return out
 
 
+@dataclass(slots=True)
+class _PendingFile:
+    """Per-file state captured in pass 1 so pass 2 can resolve cross-file edges."""
+    file_concept: Concept
+    rel_path: str
+    language: str
+    symbols: dict[str, Concept]      # name → concept (last-wins for duplicates)
+    chunks: list[SymbolChunk]
+    raw_imports: list[str]
+
+
 def index_source(
     engine: "Engine",
     source_id: str,
@@ -66,6 +77,12 @@ def index_source(
     progress: bool = False,
 ) -> IndexResult:
     """Index every supported file under a registered source.
+
+    Two-pass over the tree:
+      Pass 1 — chunk every file, create file + symbol concepts + the
+        always-resolvable edges (defined_in, part_of for methods).
+      Pass 2 — resolve raw call/extends/import names against the source-
+        wide name index and create `calls`, `extends`, and `imports` edges.
 
     Pre-condition: the source must already exist (use `add_source` first).
     Idempotency: this call ADDS chunks. To re-index from scratch, call
@@ -79,15 +96,15 @@ def index_source(
     if not root.exists():
         raise FileNotFoundError(f"source path missing: {root}")
 
-    file_count = 0
-    symbol_count = 0
-    skipped = 0
-    by_language: dict[str, int] = {}
-
     files = _walk_files(root)
     if progress:
         log.info("indexing %d files under %s", len(files), root)
 
+    pending: list[_PendingFile] = []
+    skipped = 0
+    by_language: dict[str, int] = {}
+
+    # ----- Pass 1: per-file analysis + symbol creation ----------------------
     for path in files:
         language = detect_language(path)
         if language is None:
@@ -95,13 +112,13 @@ def index_source(
             continue
 
         try:
-            chunks = chunk_file(path)
+            analysis = analyze_file(path)
         except Exception as e:  # noqa: BLE001
-            log.warning("chunk %s failed: %s", path, e)
+            log.warning("analyze %s failed: %s", path, e)
             skipped += 1
             continue
 
-        if not chunks:
+        if not analysis.chunks:
             skipped += 1
             continue
 
@@ -125,15 +142,13 @@ def index_source(
             source=SourceActor.agent,
         )
 
-        # Per-file: symbol concepts + edges. Two-pass: create all symbols
-        # for the file first (so parent->child edges resolve), then wire
-        # parent_symbol edges using the in-file name map.
         local_symbols: dict[str, Concept] = {}
-        for chunk in chunks:
+        for chunk in analysis.chunks:
             sym = _store_symbol(engine, chunk, file_concept.id, source_id)
             local_symbols[chunk.name] = sym
 
-        for chunk in chunks:
+        # Method → parent class via part_of (within the same file).
+        for chunk in analysis.chunks:
             if chunk.parent_symbol and chunk.parent_symbol in local_symbols:
                 engine.link(
                     from_id=local_symbols[chunk.name].id,
@@ -142,9 +157,83 @@ def index_source(
                     source=SourceActor.agent,
                 )
 
-        file_count += 1
-        symbol_count += len(chunks)
+        pending.append(_PendingFile(
+            file_concept=file_concept,
+            rel_path=rel,
+            language=language,
+            symbols=local_symbols,
+            chunks=analysis.chunks,
+            raw_imports=analysis.imports,
+        ))
         by_language[language] = by_language.get(language, 0) + 1
+
+    # ----- Pass 2: cross-file edge resolution -------------------------------
+    # Build a source-wide name index { symbol_name: [Concept] } so calls/
+    # extends/imports resolve to concrete edges.
+    by_name: dict[str, list[Concept]] = {}
+    by_relpath: dict[str, Concept] = {pf.rel_path: pf.file_concept for pf in pending}
+    for pf in pending:
+        for chunk in pf.chunks:
+            by_name.setdefault(chunk.name, []).append(pf.symbols[chunk.name])
+
+    edges_created = 0
+    for pf in pending:
+        # File-level imports → `imports` edges between files.
+        for raw_import in pf.raw_imports:
+            target = _resolve_import_to_file(raw_import, pf, by_relpath)
+            if target is None:
+                continue
+            engine.link(
+                from_id=pf.file_concept.id,
+                to_id=target.id,
+                kind=EdgeKind.imports,
+                source=SourceActor.agent,
+            )
+            edges_created += 1
+
+        # Symbol-level calls + extends.
+        for chunk in pf.chunks:
+            sym = pf.symbols[chunk.name]
+            for callee in chunk.calls:
+                if callee == chunk.name:  # skip self-recursion
+                    continue
+                targets = by_name.get(callee, [])
+                if not targets:
+                    continue
+                # Disambiguate: same-file callee preferred over external.
+                same_file = [t for t in targets
+                             if t.metadata.get("file_id") == pf.file_concept.id]
+                pick = same_file or targets
+                for t in pick:
+                    if t.id == sym.id:
+                        continue
+                    engine.link(
+                        from_id=sym.id,
+                        to_id=t.id,
+                        kind=EdgeKind.calls,
+                        source=SourceActor.agent,
+                    )
+                    edges_created += 1
+            for parent in chunk.extends:
+                targets = by_name.get(parent, [])
+                if not targets:
+                    continue
+                for t in targets:
+                    engine.link(
+                        from_id=sym.id,
+                        to_id=t.id,
+                        kind=EdgeKind.extends,
+                        source=SourceActor.agent,
+                    )
+                    edges_created += 1
+
+    file_count = len(pending)
+    symbol_count = sum(len(pf.chunks) for pf in pending)
+    if progress:
+        log.info(
+            "indexed %d files / %d symbols / %d resolved edges (calls + imports + extends)",
+            file_count, symbol_count, edges_created,
+        )
 
     mark_indexed(engine, source_id, file_count, symbol_count)
     return IndexResult(
@@ -154,6 +243,87 @@ def index_source(
         languages=by_language,
         skipped_files=skipped,
     )
+
+
+def _resolve_import_to_file(
+    raw_import: str,
+    pf: _PendingFile,
+    by_relpath: dict[str, Concept],
+) -> Concept | None:
+    """Map a raw import name to a file Concept in the same source, or None
+    if the import is external (third-party / stdlib / unresolvable).
+
+    Heuristics per language:
+      python: `foo.bar` → `foo/bar.py` or `foo/bar/__init__.py`
+      javascript/typescript: `./foo` → `<dir>/foo.{ts,js,svelte}` (and
+        index variants). External `react` etc. return None.
+      java: `com.example.Foo` → `com/example/Foo.java`
+      go: `github.com/x/y` is external; relative imports rare. Return None.
+    """
+    if not raw_import:
+        return None
+    lang = pf.language
+
+    if lang == "python":
+        # foo.bar → foo/bar.py | foo/bar/__init__.py
+        path_part = raw_import.replace(".", "/")
+        for cand in (f"{path_part}.py", f"{path_part}/__init__.py"):
+            if cand in by_relpath:
+                return by_relpath[cand]
+        # Could be a relative import from a deeper package — skip for now.
+        return None
+
+    if lang in ("javascript", "typescript"):
+        if not raw_import.startswith((".", "/")):
+            return None  # external module
+        from_dir = "/".join(pf.rel_path.split("/")[:-1])
+        # Resolve `./foo` and `../bar/baz` against from_dir.
+        rel = _normalize_relative(from_dir, raw_import)
+        for ext in (".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".svelte",
+                    "/index.ts", "/index.tsx", "/index.js", "/index.jsx"):
+            cand = f"{rel}{ext}"
+            if cand in by_relpath:
+                return by_relpath[cand]
+        return None
+
+    if lang == "java":
+        # com.example.Foo → com/example/Foo.java (drop trailing .* / static)
+        clean = raw_import.split(".*")[0].strip()
+        path_part = clean.replace(".", "/")
+        cand = f"{path_part}.java"
+        if cand in by_relpath:
+            return by_relpath[cand]
+        # Java imports often refer to classes rather than files; the .Foo
+        # tail is a class. Try dropping it.
+        if "/" in path_part:
+            head = path_part.rsplit("/", 1)[0]
+            cand = f"{head}.java"
+            if cand in by_relpath:
+                return by_relpath[cand]
+        return None
+
+    if lang == "go":
+        # Go imports are package paths; in-source relative imports are
+        # uncommon. Skip — slice B's same-package linker handles intra-
+        # source Go cohesion.
+        return None
+
+    return None
+
+
+def _normalize_relative(from_dir: str, rel: str) -> str:
+    """Normalize a JS/TS relative path like `./foo` or `../bar/baz` against
+    a source-relative directory."""
+    parts = from_dir.split("/") if from_dir else []
+    for seg in rel.split("/"):
+        if seg in ("", "."):
+            continue
+        if seg == "..":
+            if parts:
+                parts.pop()
+            continue
+        parts.append(seg)
+    return "/".join(parts)
 
 
 def _store_symbol(

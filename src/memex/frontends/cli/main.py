@@ -1650,6 +1650,43 @@ def source_reindex(
         engine.close()
 
 
+@source_app.command("orphans")
+def source_orphans(
+    source: Annotated[str | None, typer.Option(
+        "--source", help="Limit to a single registered source (id).",
+    )] = None,
+    include_private: Annotated[bool, typer.Option(
+        "--include-private", help="Include `_`-prefixed symbols.",
+    )] = False,
+) -> None:
+    """List code symbols with zero incoming `calls` / `extends` edges —
+    provably unreachable within the indexed corpus. Use this to surface
+    dead-code candidates. Cross-repo callers are NOT yet considered (slice B)."""
+    from memex.codebase import find_orphans
+
+    settings = get_settings()
+    engine = Engine.build_default(settings)
+    try:
+        orphans = find_orphans(
+            engine, source_id=source, include_private=include_private
+        )
+        if not orphans:
+            console.print("[green]no orphans[/green]")
+            return
+        table = Table(title=f"{len(orphans)} orphan(s)")
+        table.add_column("kind", style="bold")
+        table.add_column("name")
+        table.add_column("language", style="dim")
+        table.add_column("location", style="dim")
+        for c in orphans:
+            md = c.metadata
+            loc = f"{md.get('rel_path', '?')}:{md.get('start_line')}-{md.get('end_line')}"
+            table.add_row(md.get("symbol_kind", "?"), c.name, md.get("language", ""), loc)
+        console.print(table)
+    finally:
+        engine.close()
+
+
 @app.command(name="recall-code")
 def recall_code_cmd(
     query: Annotated[str, typer.Argument(help="Symbol name or signature substring.")],

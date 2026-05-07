@@ -54,6 +54,64 @@ class CodeRecallResult:
         }
 
 
+def find_orphans(
+    engine: "Engine",
+    *,
+    source_id: str | None = None,
+    include_private: bool = False,
+) -> list[Concept]:
+    """Symbols with zero incoming `calls` and `extends` edges — provably
+    unreachable within the indexed corpus.
+
+    This is the typed-graph differentiator vs. fuzzy/RAG search: a graph
+    predicate ("no callers") is well-defined; cosine similarity has no
+    way to express "no one references this." Use the result to surface
+    dead code candidates for cleanup.
+
+    Caveats:
+      - Public APIs (entry points, exported library functions) may show
+        up as orphans even when external consumers exist outside the
+        indexed source set. Filter by symbol naming convention
+        (`include_private=False` excludes `_underscore_prefixed` so
+        public APIs surface; pass `True` for everything).
+      - Cross-repo callers are NOT yet considered until slice B's
+        same_as linker runs — until then, a function defined in repo A
+        and called only in repo B will appear as orphan in A. Slice B
+        fixes this by considering same_as siblings.
+
+    Returns symbols sorted by file path then start line for deterministic
+    output (good for diffing across runs).
+    """
+    candidates = engine.find_by_kind(NodeKind.symbol)
+    if source_id:
+        candidates = [c for c in candidates
+                      if c.metadata.get("source_id") == source_id]
+
+    orphans: list[Concept] = []
+    for sym in candidates:
+        if not include_private and sym.name.startswith("_"):
+            continue
+        # Skip class methods — their reachability is via the parent class,
+        # which has its own caller graph; flagging methods individually
+        # is noisy.
+        if sym.metadata.get("symbol_kind") == "method":
+            continue
+        edges = engine.edges_for(sym.id)
+        incoming_call_or_extends = any(
+            e.to_id == sym.id and e.kind in (EdgeKind.calls, EdgeKind.extends)
+            for e in edges
+        )
+        if incoming_call_or_extends:
+            continue
+        orphans.append(sym)
+
+    orphans.sort(key=lambda c: (
+        c.metadata.get("rel_path", ""),
+        c.metadata.get("start_line", 0),
+    ))
+    return orphans
+
+
 def recall_code(
     engine: "Engine",
     query: str,

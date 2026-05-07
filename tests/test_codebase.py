@@ -275,3 +275,147 @@ def test_add_source_idempotent(engine: Engine, tmp_path: Path):
     assert a.id == b.id
 
 
+# ---- rich edges (calls, imports, extends) ------------------------------------
+
+
+def _make_python_codebase_with_edges(root: Path) -> None:
+    """Two-file codebase exercising imports + class inheritance + calls."""
+    (root / "helpers.py").write_text(
+        textwrap.dedent("""
+            def normalize(s):
+                return s.strip().lower()
+        """).strip(),
+        encoding="utf-8",
+    )
+    (root / "workers.py").write_text(
+        textwrap.dedent("""
+            from helpers import normalize
+
+            class Base:
+                def hello(self):
+                    print("hi")
+
+            class Worker(Base):
+                def run(self, name):
+                    return normalize(name)
+        """).strip(),
+        encoding="utf-8",
+    )
+
+
+def _edges_for_concept(engine: Engine, concept_id: str, kind: EdgeKind):
+    return [e for e in engine.edges_for(concept_id) if e.kind == kind]
+
+
+def _by_name(engine: Engine, name: str, kind: NodeKind):
+    return next(c for c in engine.find_by_kind(kind) if c.name == name)
+
+
+def test_index_creates_extends_edge(engine: Engine, tmp_path: Path):
+    code_root = tmp_path / "demo-pkg"
+    code_root.mkdir()
+    _make_python_codebase_with_edges(code_root)
+    src = add_source(engine, code_root)
+    index_source(engine, src.id)
+
+    worker = _by_name(engine, "Worker", NodeKind.symbol)
+    base = _by_name(engine, "Base", NodeKind.symbol)
+    extends = _edges_for_concept(engine, worker.id, EdgeKind.extends)
+    assert len(extends) == 1
+    assert extends[0].from_id == worker.id
+    assert extends[0].to_id == base.id
+
+
+def test_index_creates_calls_edge(engine: Engine, tmp_path: Path):
+    code_root = tmp_path / "demo-pkg"
+    code_root.mkdir()
+    _make_python_codebase_with_edges(code_root)
+    src = add_source(engine, code_root)
+    index_source(engine, src.id)
+
+    run = _by_name(engine, "run", NodeKind.symbol)
+    normalize = _by_name(engine, "normalize", NodeKind.symbol)
+    calls = _edges_for_concept(engine, run.id, EdgeKind.calls)
+    assert any(e.from_id == run.id and e.to_id == normalize.id for e in calls)
+
+
+def test_index_creates_imports_edge(engine: Engine, tmp_path: Path):
+    code_root = tmp_path / "demo-pkg"
+    code_root.mkdir()
+    _make_python_codebase_with_edges(code_root)
+    src = add_source(engine, code_root)
+    index_source(engine, src.id)
+
+    workers = next(
+        c for c in engine.find_by_kind(NodeKind.file)
+        if c.name == "workers.py"
+    )
+    helpers = next(
+        c for c in engine.find_by_kind(NodeKind.file)
+        if c.name == "helpers.py"
+    )
+    imports = _edges_for_concept(engine, workers.id, EdgeKind.imports)
+    assert any(e.to_id == helpers.id for e in imports)
+
+
+def test_find_orphans_surfaces_uncalled_symbols(engine: Engine, tmp_path: Path):
+    """Symbols with no incoming `calls` / `extends` edges are orphans —
+    the typed-graph differentiator vs. fuzzy search."""
+    from memex.codebase import find_orphans
+
+    code_root = tmp_path / "demo-pkg"
+    code_root.mkdir()
+    # `caller` calls `target`; `lonely` is uncalled. `_private` ignored
+    # by default.
+    (code_root / "main.py").write_text(
+        textwrap.dedent("""
+            def target():
+                return 1
+
+            def caller():
+                return target()
+
+            def lonely():
+                return 99
+
+            def _private():
+                return "private"
+        """).strip(),
+        encoding="utf-8",
+    )
+    src = add_source(engine, code_root)
+    index_source(engine, src.id)
+
+    orphans = find_orphans(engine, source_id=src.id)
+    names = {o.name for o in orphans}
+    assert "lonely" in names      # no callers — orphan
+    assert "caller" in names      # entry-point — also orphan (no inbound calls)
+    assert "target" not in names  # called by `caller` — not orphan
+    assert "_private" not in names  # underscore-prefixed excluded by default
+
+    # include_private=True surfaces underscore symbols too.
+    with_private = find_orphans(engine, source_id=src.id, include_private=True)
+    assert "_private" in {o.name for o in with_private}
+
+
+def test_unresolved_calls_dont_pollute_graph(engine: Engine, tmp_path: Path):
+    """Calls to external/builtin names (e.g. `print`, `len`) shouldn't
+    create dangling edges — they're left for cross-repo linker pass."""
+    code_root = tmp_path / "demo-pkg"
+    code_root.mkdir()
+    (code_root / "only.py").write_text(
+        textwrap.dedent("""
+            def shout(s):
+                return s.upper()
+        """).strip(),
+        encoding="utf-8",
+    )
+    src = add_source(engine, code_root)
+    index_source(engine, src.id)
+
+    shout = _by_name(engine, "shout", NodeKind.symbol)
+    calls = _edges_for_concept(engine, shout.id, EdgeKind.calls)
+    # `upper` isn't a symbol in the source — no edge created.
+    assert calls == []
+
+
