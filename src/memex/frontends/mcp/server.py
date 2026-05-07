@@ -454,6 +454,196 @@ class MCPServer:
             return {"status": "ok"}
 
         @mcp.tool()
+        def bulk_graph(
+            nodes: list[dict[str, Any]],
+            edges: list[dict[str, str]] | None = None,
+            source: str = "agent",
+        ) -> dict[str, Any]:
+            """Build a connected subgraph in one call. The cognitive-workflow primitive.
+
+            One bulk_graph call replaces the round-trip dance of:
+              add_node → wait → add_node → wait → link → wait → link → wait …
+
+            Nodes can carry a `local_id` (any string starting with `$`, e.g.
+            `"$proj"`) that subsequent nodes' `project_id` / `blocked_by`
+            and ALL edge `from` / `to` fields can reference within the same
+            call. The local refs resolve to real `c_<hex>` ids inside the
+            tool — the AI never has to juggle ids manually.
+
+            WHEN TO CALL:
+              - Decomposing a goal into a project + tasks + dependencies
+                in one go
+              - Capturing several related concepts (decisions, constraints,
+                facts) that mention each other
+              - Importing a structured outline (skill bundle, design doc)
+                into memex graph form
+              - Any time you'd otherwise call `add_node` 3+ times back to back
+
+            WHEN NOT TO CALL:
+              - For one isolated node — `add_node` is simpler
+              - For edges between concepts you haven't created (use `link`)
+
+            PARAMETERS:
+              nodes (list[dict]): each item is a node spec. Required field
+                is `name` (or `title` for tasks). Common fields:
+                  local_id    — `"$xxx"` to let edges/siblings reference it
+                  name        — concept name (or title for kind=task)
+                  description — body
+                  kind        — fact|decision|constraint|pattern|person|
+                                opinion|question|rejected|approach|module|
+                                endpoint|task|project (default: fact)
+                  source      — per-node override; falls back to top-level
+                  confidence  — 0.0–1.0 (concept nodes; default 1.0)
+                  verification — falsifiability primitive (concept nodes)
+                For kind="task" specifically:
+                  title       — alias for name
+                  status      — pending|in_progress|completed|blocked|cancelled
+                  priority    — p0|p1|p2|p3
+                  due         — ISO date or natural string
+                  project_id  — local_id (`"$proj"`) or real `c_<hex>`
+                  blocked_by  — list of local_ids or real ids
+                  owner       — free-form string
+
+              edges (list[dict], optional): each item is an edge spec:
+                  from  — local_id or real id (required)
+                  to    — local_id or real id (required)
+                  kind  — relates_to|depends_on|implements|supersedes|
+                          conflicts_with|motivated_by|rejected_due_to|
+                          same_as|calls|blocks|part_of|spawned_from
+                          (default: relates_to)
+
+              source (str, default="agent"): top-level actor; per-node and
+                per-edge specs can override.
+
+            RETURNS:
+              {
+                "nodes": {"$proj": "c_abc123", "$task1": "c_def456", ...},
+                "all_node_ids": ["c_abc123", "c_def456", ...],
+                "edges_created": <int>,
+                "errors": [{"phase": "node|edge", "spec": "...", "error": "..."}],
+              }
+              Partial-success semantics: a failing node or edge is logged
+              into `errors` but does not abort the rest of the call. Loud,
+              not silent — count `errors` to gate downstream logic.
+
+            EXAMPLE:
+              bulk_graph(
+                nodes=[
+                  {"local_id": "$proj", "name": "v0.7 push",
+                   "kind": "project",
+                   "description": "Codebase memory + secrets + desktop"},
+                  {"local_id": "$t1", "kind": "task",
+                   "title": "Source primitive + memex source CLI",
+                   "priority": "p1", "project_id": "$proj"},
+                  {"local_id": "$t2", "kind": "task",
+                   "title": "Tree-sitter chunker",
+                   "priority": "p1", "project_id": "$proj",
+                   "blocked_by": ["$t1"]},
+                ],
+                edges=[
+                  {"from": "$proj", "to": "c_existingDecisionId",
+                   "kind": "implements"},
+                ],
+              )
+            """
+            edges = edges or []
+            local_to_real: dict[str, str] = {}
+            created: list[dict[str, str]] = []
+            errors: list[dict[str, str]] = []
+
+            def _resolve(ref: str | None) -> str | None:
+                if ref is None:
+                    return None
+                return local_to_real.get(ref, ref)
+
+            # Pass 1: create nodes (and tasks). Local ids resolved as we go,
+            # so a later task can reference an earlier project's local_id.
+            for spec in nodes:
+                try:
+                    local_id = spec.get("local_id")
+                    kind_str = spec.get("kind", "fact")
+                    node_source = spec.get("source", source)
+
+                    if kind_str == "task":
+                        project_id = _resolve(spec.get("project_id"))
+                        blocked_refs = spec.get("blocked_by") or []
+                        blocked_real = [_resolve(b) for b in blocked_refs if b]
+                        c = engine.add_task(
+                            title=spec.get("title") or spec.get("name", ""),
+                            description=spec.get("description", ""),
+                            status=spec.get("status", "pending"),
+                            priority=spec.get("priority", "p2"),
+                            due=spec.get("due"),
+                            project_id=project_id,
+                            blocked_by=[b for b in blocked_real if b] or None,
+                            owner=spec.get("owner"),
+                        )
+                        display_name = spec.get("title") or spec.get("name", "")
+                    else:
+                        c = engine.add(
+                            name=spec.get("name", ""),
+                            description=spec.get("description", ""),
+                            kind=NodeKind(kind_str),
+                            source=Source(node_source),
+                            confidence=spec.get("confidence", 1.0),
+                            verification=spec.get("verification"),
+                        )
+                        display_name = spec.get("name", "")
+
+                    if local_id:
+                        local_to_real[local_id] = c.id
+                    created.append(
+                        {"local_id": local_id or "", "id": c.id, "name": display_name}
+                    )
+                except Exception as e:  # noqa: BLE001
+                    log.warning("bulk_graph node spec failed: %r → %s", spec, e)
+                    errors.append(
+                        {
+                            "phase": "node",
+                            "spec": str(spec)[:200],
+                            "error": str(e),
+                        }
+                    )
+
+            # Pass 2: create edges. Local refs and real ids both work.
+            edges_created = 0
+            for spec in edges:
+                try:
+                    from_id = _resolve(spec.get("from"))
+                    to_id = _resolve(spec.get("to"))
+                    if not from_id or not to_id:
+                        raise ValueError(
+                            f"edge spec missing from/to: {spec!r}"
+                        )
+                    edge_kind = EdgeKind(spec.get("kind", "relates_to"))
+                    edge_source = spec.get("source", source)
+                    engine.link(
+                        from_id=from_id,
+                        to_id=to_id,
+                        kind=edge_kind,
+                        source=Source(edge_source),
+                    )
+                    edges_created += 1
+                except Exception as e:  # noqa: BLE001
+                    log.warning("bulk_graph edge spec failed: %r → %s", spec, e)
+                    errors.append(
+                        {
+                            "phase": "edge",
+                            "spec": str(spec)[:200],
+                            "error": str(e),
+                        }
+                    )
+
+            return {
+                "nodes": {
+                    n["local_id"]: n["id"] for n in created if n["local_id"]
+                },
+                "all_node_ids": [n["id"] for n in created],
+                "edges_created": edges_created,
+                "errors": errors,
+            }
+
+        @mcp.tool()
         def observe(
             kind: str,
             actor: str = "agent",
