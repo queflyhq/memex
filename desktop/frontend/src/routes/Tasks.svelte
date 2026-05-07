@@ -4,7 +4,14 @@
     UpdateTaskStatus,
     DeleteNode,
     GetNodeNeighborhood,
+    GetTaskComments,
+    AddTaskComment,
   } from "../../wailsjs/go/main/App.js";
+
+  let comments: any[] = [];
+  let commentsLoading = false;
+  let newCommentText = "";
+  let addingComment = false;
 
   export let GetTasks: (status: string, limit: number) => Promise<any>;
 
@@ -106,13 +113,37 @@
   async function pickTask(t: any) {
     selected = t;
     detail = null;
+    comments = [];
     detailLoading = true;
+    commentsLoading = true;
     try {
-      detail = await GetNodeNeighborhood(t.id);
+      const [n, c] = await Promise.all([
+        GetNodeNeighborhood(t.id),
+        GetTaskComments(t.id).catch(() => ({ comments: [] })),
+      ]);
+      detail = n;
+      comments = c?.comments ?? [];
     } catch (e: any) {
       error = String(e?.message || e);
     } finally {
       detailLoading = false;
+      commentsLoading = false;
+    }
+  }
+
+  async function postComment() {
+    if (!selected || !newCommentText.trim()) return;
+    addingComment = true;
+    try {
+      const txt = newCommentText.trim();
+      newCommentText = "";
+      await AddTaskComment(selected.id, txt);
+      const c = await GetTaskComments(selected.id);
+      comments = c?.comments ?? [];
+    } catch (e: any) {
+      error = String(e?.message || e);
+    } finally {
+      addingComment = false;
     }
   }
 
@@ -280,6 +311,46 @@
       <span>id: <code>{selected.id}</code></span>
       <span>created: {fmtDate(selected.created_at)}</span>
     </div>
+
+    <h4>Comments &amp; instructions ({comments.length})</h4>
+    {#if commentsLoading}
+      <p class="muted small">loading…</p>
+    {:else}
+      {#if comments.length === 0}
+        <p class="muted small">
+          No comments yet. Anything you add here is recall-queryable, so
+          when memex is asked to work on this task the AI sees these as
+          instructions.
+        </p>
+      {:else}
+        <div class="comment-list">
+          {#each comments as c (c.id)}
+            <div class="comment">
+              <div class="c-meta">
+                <span class="c-author">{c.source}</span>
+                <span class="c-time muted">{fmtDate(c.created_at)}</span>
+              </div>
+              <pre class="c-body">{c.description}</pre>
+            </div>
+          {/each}
+        </div>
+      {/if}
+      <div class="add-comment">
+        <textarea
+          placeholder="Add an instruction for the AI working on this task…"
+          bind:value={newCommentText}
+          rows="3"
+          disabled={addingComment}
+        ></textarea>
+        <button
+          class="primary-btn"
+          on:click={postComment}
+          disabled={addingComment || !newCommentText.trim()}
+        >
+          {addingComment ? "posting…" : "post"}
+        </button>
+      </div>
+    {/if}
 
     {#if detailLoading}
       <p class="muted">loading associations…</p>
@@ -705,5 +776,78 @@
     color: #6b7280;
     font-family: "Fira Code", monospace;
     font-size: 10px;
+  }
+  /* comments */
+  .comment-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-bottom: 8px;
+  }
+  .comment {
+    background: #fafbfc;
+    border: 1px solid #e6e8eb;
+    border-radius: 6px;
+    padding: 8px 10px;
+  }
+  .c-meta {
+    display: flex;
+    justify-content: space-between;
+    font-size: 10px;
+    margin-bottom: 4px;
+  }
+  .c-author {
+    color: #b45309;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+  }
+  .c-time {
+    color: #6b7280;
+    font-family: "Fira Code", monospace;
+  }
+  .c-body {
+    margin: 0;
+    font-family: "Inter", -apple-system, sans-serif;
+    font-size: 12px;
+    color: #1f2328;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+    line-height: 1.45;
+  }
+  .add-comment {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-bottom: 8px;
+  }
+  .add-comment textarea {
+    width: 100%;
+    background: #ffffff;
+    border: 1px solid #d0d7de;
+    border-radius: 5px;
+    padding: 7px 9px;
+    font-family: inherit;
+    font-size: 12px;
+    resize: vertical;
+  }
+  .primary-btn {
+    background: #fef3c7;
+    border: 1px solid #fde047;
+    color: #1f2328;
+    padding: 5px 12px;
+    border-radius: 5px;
+    font-size: 12px;
+    font-family: inherit;
+    cursor: pointer;
+    align-self: flex-end;
+    font-weight: 600;
+  }
+  .primary-btn:hover:not(:disabled) {
+    background: #fde047;
+  }
+  .primary-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
   }
 </style>

@@ -4,7 +4,33 @@
     AddCodeSource,
     ListCodeSources,
     GetConcepts,
+    FileSymbols,
   } from "../../wailsjs/go/main/App.js";
+
+  // File-drilldown state
+  let activeFile: any = null;
+  let fileSymbols: any[] = [];
+  let fileSymbolsLoading = false;
+  let activeSymbol: any = null;
+
+  async function pickFile(f: any) {
+    activeFile = f;
+    activeSymbol = null;
+    fileSymbols = [];
+    fileSymbolsLoading = true;
+    try {
+      const res = await FileSymbols(f.metadata.source_id, f.id);
+      fileSymbols = res?.symbols ?? [];
+    } catch (e: any) {
+      error = String(e?.message || e);
+    } finally {
+      fileSymbolsLoading = false;
+    }
+  }
+
+  function pickSymbol(s: any) {
+    activeSymbol = s;
+  }
 
   // Language icons sourced from authfi-website. Missing icons fall back
   // to a colored letter chip.
@@ -207,20 +233,88 @@
         {#if activeFiles.length === 0}
           <p class="muted">No files indexed yet for this source.</p>
         {:else}
-          <div class="files">
-            {#each activeFiles as f}
-              <div class="file">
-                {#if LANG_ICON[f.metadata?.language]}
-                  <img class="row-ico" src={LANG_ICON[f.metadata.language]} alt={f.metadata.language} />
-                {:else}
-                  <span
-                    class="row-letter"
-                    style="background: {LANG_FALLBACK_COLOR[f.metadata?.language] ?? '#6b7280'}"
-                  >{(f.metadata?.language ?? "?")[0]?.toUpperCase()}</span>
+          <div class="three-pane">
+            <div class="files">
+              {#each activeFiles as f (f.id)}
+                <button
+                  class="file"
+                  class:active={activeFile?.id === f.id}
+                  on:click={() => pickFile(f)}
+                >
+                  {#if LANG_ICON[f.metadata?.language]}
+                    <img class="row-ico" src={LANG_ICON[f.metadata.language]} alt={f.metadata.language} />
+                  {:else}
+                    <span
+                      class="row-letter"
+                      style="background: {LANG_FALLBACK_COLOR[f.metadata?.language] ?? '#6b7280'}"
+                    >{(f.metadata?.language ?? "?")[0]?.toUpperCase()}</span>
+                  {/if}
+                  <span class="path">{f.name}</span>
+                </button>
+              {/each}
+            </div>
+
+            <div class="symbols-pane">
+              {#if !activeFile}
+                <p class="muted small">click a file to see its symbols</p>
+              {:else if fileSymbolsLoading}
+                <p class="muted small">loading symbols…</p>
+              {:else if fileSymbols.length === 0}
+                <p class="muted small">No symbols indexed for this file (config / docs / non-typed lang).</p>
+              {:else}
+                <div class="symbols-head">
+                  <span class="muted">{fileSymbols.length} symbol{fileSymbols.length === 1 ? "" : "s"} in</span>
+                  <span class="mono">{activeFile.name}</span>
+                </div>
+                <div class="symbols">
+                  {#each fileSymbols as s (s.id)}
+                    <button
+                      class="symbol"
+                      class:active={activeSymbol?.id === s.id}
+                      on:click={() => pickSymbol(s)}
+                    >
+                      <span class="sk-chip" title="{s.metadata?.symbol_kind}">
+                        {s.metadata?.symbol_kind?.[0]?.toUpperCase() ?? "?"}
+                      </span>
+                      <span class="s-name">{s.name}</span>
+                      <span class="s-line">L{s.metadata?.start_line}</span>
+                    </button>
+                  {/each}
+                </div>
+              {/if}
+            </div>
+
+            <div class="symbol-detail">
+              {#if !activeSymbol}
+                <p class="muted small">click a symbol to see its signature + body</p>
+              {:else}
+                <div class="sd-head">
+                  <span class="kind-chip">{activeSymbol.metadata?.symbol_kind}</span>
+                  <strong>{activeSymbol.name}</strong>
+                  <span class="muted small">L{activeSymbol.metadata?.start_line}-{activeSymbol.metadata?.end_line}</span>
+                </div>
+                {#if activeSymbol.metadata?.signature}
+                  <pre class="sig">{activeSymbol.metadata.signature}</pre>
                 {/if}
-                <span class="path">{f.name}</span>
-              </div>
-            {/each}
+                {#if activeSymbol.metadata?.docstring}
+                  <h4>Docstring</h4>
+                  <pre class="doc">{activeSymbol.metadata.docstring}</pre>
+                {/if}
+                {#if activeSymbol.metadata?.annotations?.length}
+                  <h4>Annotations</h4>
+                  <div class="annot">
+                    {#each activeSymbol.metadata.annotations as a}
+                      <span class="ann-chip">@{a.name}{a.args}</span>
+                    {/each}
+                  </div>
+                {/if}
+                {#if activeSymbol.metadata?.body}
+                  <h4>Body (preview)</h4>
+                  <pre class="body">{activeSymbol.metadata.body}</pre>
+                {/if}
+                <div class="muted small">id: <code>{activeSymbol.id}</code></div>
+              {/if}
+            </div>
           </div>
         {/if}
       {/if}
@@ -435,7 +529,164 @@
     font-size: 11px;
     font-family: "Fira Code", monospace;
   }
+  .three-pane {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1.4fr;
+    gap: 12px;
+    height: calc(100vh - 320px);
+    min-height: 320px;
+  }
+  .files {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    overflow-y: auto;
+    background: #ffffff;
+    border: 1px solid #e6e8eb;
+    border-radius: 6px;
+    padding: 4px;
+  }
   .file {
+    display: grid;
+    grid-template-columns: 24px 1fr;
+    align-items: center;
+    gap: 8px;
+    padding: 5px 8px;
+    border: 0;
+    background: transparent;
+    border-radius: 4px;
+    text-align: left;
+    cursor: pointer;
+    font-family: "Fira Code", monospace;
+    font-size: 11px;
+    color: #1f2328;
+  }
+  .file:hover {
+    background: #eef0f2;
+  }
+  .file.active {
+    background: #fef3c7;
+  }
+  .symbols-pane, .symbol-detail {
+    background: #ffffff;
+    border: 1px solid #e6e8eb;
+    border-radius: 6px;
+    padding: 8px 10px;
+    overflow-y: auto;
+  }
+  .symbols-head {
+    display: flex;
+    gap: 6px;
+    align-items: baseline;
+    padding: 2px 4px 8px;
+    border-bottom: 1px solid #f3f4f6;
+    margin-bottom: 6px;
+    font-size: 11px;
+  }
+  .symbols {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+  }
+  .symbol {
+    display: grid;
+    grid-template-columns: 22px 1fr 36px;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 6px;
+    border: 0;
+    background: transparent;
+    border-radius: 4px;
+    text-align: left;
+    cursor: pointer;
+    font-family: "Fira Code", monospace;
+    font-size: 11px;
+    color: #1f2328;
+  }
+  .symbol:hover { background: #eef0f2; }
+  .symbol.active { background: #fef3c7; }
+  .sk-chip {
+    background: #fbbf24;
+    color: #1f2328;
+    font-weight: 700;
+    font-size: 10px;
+    text-align: center;
+    border-radius: 4px;
+  }
+  .s-line {
+    color: #6b7280;
+    font-size: 10px;
+    text-align: right;
+  }
+  .sd-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 8px;
+    flex-wrap: wrap;
+  }
+  .kind-chip {
+    background: #fef3c7;
+    color: #b45309;
+    padding: 2px 8px;
+    border-radius: 9px;
+    font-size: 10px;
+    text-transform: uppercase;
+    font-weight: 700;
+    letter-spacing: 0.4px;
+  }
+  .sig {
+    background: #fafbfc;
+    border: 1px solid #e6e8eb;
+    border-radius: 4px;
+    padding: 6px 8px;
+    font-family: "Fira Code", monospace;
+    font-size: 11px;
+    margin: 0 0 8px;
+    white-space: pre-wrap;
+    color: #1f2328;
+  }
+  .doc {
+    background: #fef9c3;
+    border: 1px solid #fde047;
+    border-radius: 4px;
+    padding: 6px 8px;
+    font-family: "Inter", sans-serif;
+    font-size: 11px;
+    margin: 0 0 8px;
+    white-space: pre-wrap;
+    line-height: 1.5;
+    color: #1f2328;
+  }
+  .annot {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    margin-bottom: 8px;
+  }
+  .ann-chip {
+    background: #f3f4f6;
+    color: #1f2328;
+    padding: 1px 7px;
+    border-radius: 9px;
+    font-family: "Fira Code", monospace;
+    font-size: 10px;
+  }
+  .body {
+    background: #0f172a;
+    color: #e2e8f0;
+    border-radius: 4px;
+    padding: 8px 10px;
+    font-family: "Fira Code", monospace;
+    font-size: 11px;
+    margin: 0 0 8px;
+    white-space: pre-wrap;
+    overflow-x: auto;
+    max-height: 280px;
+    line-height: 1.45;
+  }
+  /* legacy single-column layout — kept for reference but overridden by .three-pane */
+  .legacy-file-row {
     display: grid;
     grid-template-columns: 24px 1fr;
     align-items: center;

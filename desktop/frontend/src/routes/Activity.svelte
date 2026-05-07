@@ -7,18 +7,22 @@
   let error: string | null = null;
   let kindFilter = "";
   let pollHandle: number | undefined;
+  let nowTick = Date.now();
+  let tickHandle: number | undefined;
 
   const kindOptions = [
-    "", "user_prompt", "tool_call", "concept_added", "edge_added",
+    "", "user_prompt", "tool_call", "tool_pre", "tool_post",
+    "concept_added", "edge_added", "concept_deleted",
     "auto_approval", "auto_deny", "secret_redacted",
-    "user_correction", "file_reindexed", "afk_enabled", "afk_disabled",
+    "user_correction", "file_reindexed", "comment_added",
+    "afk_enabled", "afk_disabled", "afk_expired",
   ];
 
   async function load(silent = false) {
     if (!silent) loading = true;
     error = null;
     try {
-      const res = await GetEvents(kindFilter, 200);
+      const res = await GetEvents(kindFilter, 500);
       events = res.events ?? [];
     } catch (e: any) {
       error = String(e?.message || e);
@@ -30,28 +34,107 @@
   onMount(() => {
     load();
     pollHandle = window.setInterval(() => load(true), 5_000);
+    tickHandle = window.setInterval(() => (nowTick = Date.now()), 30_000);
   });
   onDestroy(() => {
     if (pollHandle) clearInterval(pollHandle);
+    if (tickHandle) clearInterval(tickHandle);
   });
   $: if (kindFilter !== undefined) load();
 
-  function fmtTime(ts: string): string {
-    if (!ts) return "";
+  // ---- Bucketing into Today / Yesterday / Earlier this week / Older ----
+
+  type Bucket = { label: string; events: any[] };
+
+  function relativeBucket(ts: string): string {
     const d = new Date(ts);
-    return d.toLocaleString();
+    const now = new Date(nowTick);
+    const start = (x: Date) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
+    const today = start(now);
+    const yest = today - 86400_000;
+    const dayMs = start(d);
+    if (dayMs >= today) return "Today";
+    if (dayMs >= yest) return "Yesterday";
+    if (dayMs >= today - 6 * 86400_000) {
+      return d.toLocaleDateString(undefined, { weekday: "long" });
+    }
+    return d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
+  }
+
+  function relTime(ts: string): string {
+    const d = new Date(ts).getTime();
+    const diff = Math.floor((nowTick - d) / 1000);
+    if (diff < 60) return `${diff}s ago`;
+    if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
+    if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
+    return new Date(ts).toLocaleString();
+  }
+
+  function eventColor(kind: string): string {
+    if (kind === "auto_deny") return "#dc2626";
+    if (kind === "auto_approval") return "#16a34a";
+    if (kind === "secret_redacted") return "#b45309";
+    if (kind === "user_correction") return "#7c3aed";
+    if (kind === "file_reindexed") return "#0ea5e9";
+    if (kind === "comment_added") return "#fbbf24";
+    if (kind === "afk_enabled") return "#16a34a";
+    if (kind === "afk_disabled" || kind === "afk_expired") return "#737373";
+    if (kind === "user_prompt") return "#7c3aed";
+    if (kind === "tool_call" || kind === "tool_pre" || kind === "tool_post")
+      return "#0891b2";
+    if (kind === "concept_added") return "#94a3b8";
+    if (kind === "edge_added") return "#94a3b8";
+    if (kind === "concept_deleted") return "#dc2626";
+    return "#6b7280";
+  }
+
+  // Group consecutive identical events ("auto_approval × 12 in 4 minutes").
+  // First we bucket by relative day, then within each bucket we collapse runs.
+  $: buckets = (() => {
+    const groups: Bucket[] = [];
+    for (const ev of events) {
+      const label = relativeBucket(ev.timestamp);
+      let g = groups[groups.length - 1];
+      if (!g || g.label !== label) {
+        g = { label, events: [] };
+        groups.push(g);
+      }
+      g.events.push(ev);
+    }
+    return groups;
+  })();
+
+  function collapseRuns(arr: any[]): any[] {
+    const out: any[] = [];
+    let last: any = null;
+    for (const ev of arr) {
+      if (last && last.kind === ev.kind && last.actor === ev.actor) {
+        last._count = (last._count ?? 1) + 1;
+        last._latest_ts = ev.timestamp;
+      } else {
+        last = { ...ev, _count: 1, _latest_ts: ev.timestamp };
+        out.push(last);
+      }
+    }
+    return out;
   }
 </script>
 
 <header>
-  <h1>Activity</h1>
+  <div>
+    <h1>Activity</h1>
+    <div class="subtitle">
+      Episodic event stream — every prompt, tool call, decision write,
+      auto-approval, redaction, hook fire. Auto-refreshes every 5s.
+    </div>
+  </div>
   <div class="controls">
     <select bind:value={kindFilter}>
       {#each kindOptions as k}
         <option value={k}>{k || "(all kinds)"}</option>
       {/each}
     </select>
-    <span class="muted">
+    <span class="muted small">
       {#if !loading}{events.length} events{/if}
     </span>
   </div>
@@ -62,20 +145,36 @@
 {:else if error}
   <p class="error">error: {error}</p>
 {:else if events.length === 0}
-  <p class="muted">no events</p>
+  <p class="muted">No events match this filter.</p>
 {:else}
-  <div class="list">
-    {#each events as ev}
-      <div class="row">
-        <span class="time">{fmtTime(ev.timestamp)}</span>
-        <span class="kind">{ev.kind}</span>
-        <span class="actor">{ev.actor}</span>
-        {#if ev.payload && Object.keys(ev.payload).length}
-          <details class="payload">
-            <summary>payload</summary>
-            <pre>{JSON.stringify(ev.payload, null, 2)}</pre>
-          </details>
-        {/if}
+  <div class="timeline">
+    {#each buckets as bucket (bucket.label)}
+      <div class="bucket">
+        <div class="bucket-label">{bucket.label}</div>
+        <div class="bucket-rail"></div>
+        <div class="bucket-events">
+          {#each collapseRuns(bucket.events) as ev (ev.id)}
+            <div class="event">
+              <span
+                class="dot"
+                style="background: {eventColor(ev.kind)}"
+                title="{ev.kind}"
+              ></span>
+              <span class="ev-kind" style="color: {eventColor(ev.kind)}">
+                {ev.kind}
+                {#if ev._count > 1}<span class="run">× {ev._count}</span>{/if}
+              </span>
+              <span class="ev-actor">{ev.actor}</span>
+              <span class="ev-time muted">{relTime(ev._latest_ts ?? ev.timestamp)}</span>
+              {#if ev.payload && Object.keys(ev.payload).length}
+                <details class="payload">
+                  <summary>payload</summary>
+                  <pre>{JSON.stringify(ev.payload, null, 2)}</pre>
+                </details>
+              {/if}
+            </div>
+          {/each}
+        </div>
       </div>
     {/each}
   </div>
@@ -85,66 +184,133 @@
   header {
     display: flex;
     justify-content: space-between;
-    align-items: center;
-    margin-bottom: 16px;
+    align-items: flex-end;
+    gap: 24px;
+    margin-bottom: 18px;
   }
   h1 {
     margin: 0;
     font-size: 22px;
     font-weight: 600;
     color: #1f2328;
+    font-family: "Plus Jakarta Sans", sans-serif;
+    letter-spacing: -0.02em;
+  }
+  .subtitle {
+    margin-top: 4px;
+    font-size: 12px;
+    color: #6b7280;
+    max-width: 580px;
+    line-height: 1.4;
   }
   .controls {
     display: flex;
+    gap: 10px;
     align-items: center;
-    gap: 12px;
-    font-size: 12px;
   }
   select {
     background: #ffffff;
     color: #1f2328;
     border: 1px solid #d0d7de;
     padding: 5px 10px;
-    border-radius: 4px;
+    border-radius: 5px;
     font-size: 12px;
     font-family: inherit;
   }
-  .list {
+
+  .timeline {
     display: flex;
     flex-direction: column;
-    gap: 4px;
-    font-family: "Fira Code", "Consolas", monospace;
-    font-size: 12px;
+    gap: 24px;
   }
-  .row {
+  .bucket {
     display: grid;
-    grid-template-columns: 180px 220px 110px 1fr;
+    grid-template-columns: 140px 16px 1fr;
+    gap: 8px;
+    align-items: flex-start;
+  }
+  .bucket-label {
+    font-size: 12px;
+    font-weight: 700;
+    color: #1f2328;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    padding-top: 4px;
+    text-align: right;
+    padding-right: 8px;
+  }
+  .bucket-rail {
+    width: 2px;
+    background: #e6e8eb;
+    justify-self: center;
+    align-self: stretch;
+    margin-top: 8px;
+    margin-bottom: 8px;
+    border-radius: 1px;
+  }
+  .bucket-events {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .event {
+    display: grid;
+    grid-template-columns: 12px 220px 100px 90px 1fr;
     align-items: center;
     gap: 10px;
-    padding: 5px 8px;
-    border-bottom: 1px solid #f3f4f6;
+    background: #fafbfc;
+    border: 1px solid #e6e8eb;
+    border-radius: 6px;
+    padding: 6px 10px;
+    font-size: 12px;
   }
-  .time {
-    color: #6b7280;
+  .dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
   }
-  .kind {
+  .ev-kind {
+    font-weight: 600;
+    font-family: "Fira Code", monospace;
+    font-size: 11px;
+  }
+  .run {
+    background: #fef3c7;
     color: #b45309;
+    font-size: 10px;
+    padding: 1px 6px;
+    border-radius: 9px;
+    font-weight: 700;
+    margin-left: 4px;
   }
-  .actor {
+  .ev-actor {
     color: #1f2328;
+    font-family: "Fira Code", monospace;
+    font-size: 11px;
+  }
+  .ev-time {
+    color: #6b7280;
+    font-size: 11px;
   }
   .payload summary {
     color: #6b7280;
     cursor: pointer;
+    font-size: 11px;
   }
   .payload pre {
-    background: #fafbfc;
-    border: 1px solid #e6e8eb;
-    padding: 8px;
-    border-radius: 4px;
-    overflow-x: auto;
     margin-top: 4px;
+    background: #ffffff;
+    border: 1px solid #e6e8eb;
+    border-radius: 4px;
+    padding: 6px 8px;
+    font-family: "Fira Code", monospace;
+    font-size: 10px;
     color: #1f2328;
+    white-space: pre-wrap;
+    overflow-x: auto;
+  }
+  .small {
+    font-size: 11px;
   }
   .muted {
     color: #6b7280;
