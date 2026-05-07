@@ -23,25 +23,51 @@
   let detail: any = null;
   let detailLoading = false;
 
-  type Bucket = { key: string; label: string; rows: any[] };
-  const COLUMN_KEYS = ["pending", "in_progress", "blocked", "completed", "cancelled"];
-  const COLUMN_LABEL: Record<string, string> = {
-    pending: "Pending",
-    in_progress: "In Progress",
-    blocked: "Blocked",
-    completed: "Completed",
-    cancelled: "Cancelled",
+  type Bucket = { key: string; label: string; rows: any[]; statuses: string[] };
+  // Cancelled + Blocked share one "Inactive" lane to keep the kanban
+  // focused on the work-in-flight columns.
+  const COLUMN_DEFS: { key: string; label: string; statuses: string[] }[] = [
+    { key: "pending",     label: "Pending",     statuses: ["pending"] },
+    { key: "in_progress", label: "In Progress", statuses: ["in_progress"] },
+    { key: "inactive",    label: "Blocked / Cancelled",
+      statuses: ["blocked", "cancelled"] },
+    { key: "completed",   label: "Completed",   statuses: ["completed"] },
+  ];
+  // Drag-target → primary status to write back. Inactive lane defaults
+  // to "blocked" (the more recoverable of the two).
+  const PRIMARY_STATUS: Record<string, string> = {
+    pending: "pending", in_progress: "in_progress",
+    inactive: "blocked", completed: "completed",
   };
 
   let columns: Bucket[] = [];
   let projects: any[] = [];
 
   function bucket(rows: any[]): Bucket[] {
-    return COLUMN_KEYS.map((k) => ({
-      key: k,
-      label: COLUMN_LABEL[k],
-      rows: rows.filter((t) => (t.metadata?.status ?? "pending") === k),
+    return COLUMN_DEFS.map((c) => ({
+      key: c.key,
+      label: c.label,
+      statuses: c.statuses,
+      rows: rows.filter((t) =>
+        c.statuses.includes(t.metadata?.status ?? "pending"),
+      ),
     }));
+  }
+
+  // Stable Jira-style ID per task — derived from created_at order so the
+  // mapping is consistent across desktop sessions without a backfill.
+  // Format: MEX-<n>. Computed once per load.
+  let taskIdMap: Record<string, string> = {};
+  function buildTaskIds(rows: any[]) {
+    const sorted = [...rows].sort((a, b) =>
+      (a.created_at ?? "").localeCompare(b.created_at ?? "")
+    );
+    const m: Record<string, string> = {};
+    sorted.forEach((t, i) => (m[t.id] = `MEX-${i + 1}`));
+    return m;
+  }
+  function tid(t: any): string {
+    return taskIdMap[t.id] ?? t.id.slice(0, 8);
   }
 
   let projectIndex: Record<string, any> = {};
@@ -65,6 +91,7 @@
           blockedByCounts[t.id] = blockers.length;
         }
       }
+      taskIdMap = buildTaskIds(taskRows);
       columns = bucket(taskRows);
     } catch (e: any) {
       error = String(e?.message || e);
@@ -79,17 +106,22 @@
     return projectIndex[pid]?.name ?? null;
   }
 
-  async function moveTask(id: string, status: string) {
+  async function moveTaskToColumn(id: string, columnKey: string) {
     const taskRows = tasks.filter((t) => t.kind === "task");
     const t = taskRows.find((x) => x.id === id);
-    if (!t || (t.metadata?.status ?? "pending") === status) return;
+    if (!t) return;
+    const cur = t.metadata?.status ?? "pending";
+    const col = COLUMN_DEFS.find((c) => c.key === columnKey);
+    if (!col) return;
+    // If task already in this column, no-op.
+    if (col.statuses.includes(cur)) return;
+    const status = PRIMARY_STATUS[columnKey];
     // Optimistic update.
     t.metadata = { ...(t.metadata || {}), status };
     columns = bucket(taskRows);
     try {
       await UpdateTaskStatus(id, status);
     } catch (e: any) {
-      // Roll back.
       error = String(e?.message || e);
       await load();
     }
@@ -160,11 +192,11 @@
     if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
   }
 
-  function onDrop(e: DragEvent, status: string) {
+  function onDrop(e: DragEvent, columnKey: string) {
     e.preventDefault();
     const id = dragId ?? e.dataTransfer?.getData("text/plain");
     dragId = null;
-    if (id) moveTask(id, status);
+    if (id) moveTaskToColumn(id, columnKey);
   }
 
   function priorityColor(p: string): string {
@@ -243,6 +275,7 @@
               tabindex="0"
             >
               <div class="task-head">
+                <span class="task-id">{tid(t)}</span>
                 <span
                   class="prio"
                   style="background: {priorityColor(t.metadata?.priority)}"
@@ -494,7 +527,7 @@
   }
   .kanban {
     display: grid;
-    grid-template-columns: repeat(5, 1fr);
+    grid-template-columns: repeat(4, 1fr);
     gap: 8px;
   }
   .col {
@@ -548,6 +581,18 @@
     align-items: flex-start;
     gap: 7px;
     margin-bottom: 4px;
+    flex-wrap: wrap;
+  }
+  .task-id {
+    background: #1f2328;
+    color: #fbbf24;
+    font-family: "Fira Code", monospace;
+    font-size: 9px;
+    font-weight: 700;
+    padding: 2px 6px;
+    border-radius: 3px;
+    letter-spacing: 0.4px;
+    flex-shrink: 0;
   }
   .prio {
     color: #ffffff;

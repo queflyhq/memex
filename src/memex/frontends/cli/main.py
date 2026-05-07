@@ -2290,35 +2290,49 @@ def hook_pre_tool_gate() -> None:
     tool_input = event.get("tool_input") or {}
 
     settings = get_settings()
+    decision = "ask"
+    reason = ""
+    # Route through the daemon's HTTP /should-approve endpoint — opening
+    # our own Engine here contests the DuckDB write lock, fails silently,
+    # and Claude Code falls through to a user prompt even in AFK mode.
     try:
-        from memex.enforcement import ApprovalDecision, should_approve
-        engine = Engine.build_default(settings)
-    except Exception as e:  # noqa: BLE001
-        log = logging.getLogger(__name__)
-        log.warning("hook pre-tool-gate: engine init failed: %s", e)
-        return
-    try:
-        match = should_approve(
-            engine, tool_name=tool_name, tool_input=tool_input,
+        import httpx as _httpx
+        from memex.frontends.mcp.daemon import (
+            daemon_url, ensure_daemon, is_daemon_alive,
         )
+        url = daemon_url(settings)
+        if not settings.daemon_url and not is_daemon_alive(url, settings.auth_token):
+            url = ensure_daemon(settings)
+        headers = (
+            {"Authorization": f"Bearer {settings.auth_token}"}
+            if settings.auth_token else {}
+        )
+        r = _httpx.post(
+            url + "/should-approve",
+            json={"tool_name": tool_name, "tool_input": tool_input},
+            headers=headers,
+            timeout=3.0,
+        )
+        if r.status_code == 200:
+            data = r.json()
+            decision = data.get("decision", "ask")
+            reason = data.get("reason", "")
     except Exception as e:  # noqa: BLE001
         log = logging.getLogger(__name__)
-        log.warning("hook pre-tool-gate: should_approve failed: %s", e)
+        log.warning("hook pre-tool-gate: daemon call failed: %s", e)
         return
-    finally:
-        engine.close()
 
-    if match.decision == ApprovalDecision.approve:
+    if decision == "approve":
         _emit_hook_output({
             "permissionDecision": "allow",
-            "permissionDecisionReason": f"memex: {match.reason}",
+            "permissionDecisionReason": f"memex: {reason}",
         })
-    elif match.decision == ApprovalDecision.deny:
+    elif decision == "deny":
         _emit_hook_output({
             "permissionDecision": "deny",
-            "permissionDecisionReason": f"memex blocked: {match.reason}",
+            "permissionDecisionReason": f"memex blocked: {reason}",
         })
-    # ask → no output
+    # ask → no output (default user-prompt behavior fires)
 
 
 if __name__ == "__main__":

@@ -896,6 +896,26 @@ class HTTPFrontend:
             engine.put(c)
             return c.model_dump(mode="json")
 
+        @app.post("/should-approve", tags=["enforcement"], dependencies=[Depends(check_auth)])
+        def should_approve_endpoint(body: dict[str, Any] = Body(...)) -> dict[str, Any]:
+            """Layer-4 enforcement check. Body: {tool_name, tool_input}.
+            Returns {decision, policy_id, reason}. Used by the PreToolUse
+            hook so it can decide via the daemon's already-open engine
+            (avoiding the DuckDB write-lock contest that was making the
+            hook fail silently → user always got prompted even in AFK)."""
+            from memex.enforcement import should_approve as _should_approve
+            tool_name = body.get("tool_name")
+            tool_input = body.get("tool_input") or {}
+            if not tool_name:
+                raise HTTPException(status_code=400, detail="tool_name required")
+            try:
+                m = _should_approve(
+                    engine, tool_name=tool_name, tool_input=tool_input,
+                )
+            except Exception as e:  # noqa: BLE001
+                return {"decision": "ask", "policy_id": "", "reason": f"error: {e}"}
+            return m.to_dict()
+
         @app.get("/afk", tags=["enforcement"], dependencies=[Depends(check_auth)])
         def afk_get() -> dict[str, Any]:
             from memex.enforcement import afk_status

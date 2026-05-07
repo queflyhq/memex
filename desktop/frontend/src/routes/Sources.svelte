@@ -270,11 +270,57 @@
       {:else if filesLoading}
         <p class="muted">loading files…</p>
       {:else}
-        <h2>{activeSource.name}</h2>
-        <div class="meta">
-          <span>id: <code>{activeSource.id}</code></span>
-          <span>path: <code>{activeSource.metadata?.path}</code></span>
+        <div class="src-head">
+          <h2>{activeSource.name}</h2>
+          {#if activeSource.metadata?.git_host}
+            {@const b = hostBadge(activeSource.metadata.git_host)}
+            <span class="host-pill"
+                  style="background: {b.bg}; color: {b.fg}">{b.name}</span>
+          {/if}
+          <button class="link-btn" disabled={linkRunning} on:click={runLinker}>
+            {linkRunning ? "linking…" : "Run cross-repo linker"}
+          </button>
         </div>
+        <div class="meta">
+          <span title="filesystem path"><strong>path</strong> <code>{activeSource.metadata?.path}</code></span>
+          {#if activeSource.metadata?.git_remote}
+            <span><strong>remote</strong> <code>{activeSource.metadata.git_remote}</code></span>
+          {/if}
+          {#if activeSource.metadata?.git_branch}
+            <span>
+              <strong>branch</strong> <code>{activeSource.metadata.git_branch}</code>
+              <strong> commit</strong> <code>{fmtCommit(activeSource.metadata?.git_commit)}</code>
+            </span>
+          {/if}
+          <span>
+            <strong>indexed</strong> {fmt(activeSource.metadata?.last_indexed_at)}
+            · <strong>id</strong> <code>{activeSource.id}</code>
+          </span>
+        </div>
+
+        {#if linkResult}
+          <div class="link-banner">
+            ✓ linker created <strong>{linkResult.pairs_created}</strong> same_as pairs
+            across <strong>{linkResult.sources_considered}</strong> sources.
+          </div>
+        {/if}
+
+        {#if sourceStats?.cross_repo_links && Object.keys(sourceStats.cross_repo_links).length}
+          <h3>Cross-repo links</h3>
+          <div class="muted small">
+            How this codebase shares typed symbols (same_as edges) with other registered sources.
+          </div>
+          <div class="cross-list">
+            {#each Object.entries(sourceStats.cross_repo_links).sort((a, b) => Number(b[1]) - Number(a[1])) as [otherId, count]}
+              {@const o = sourceById[otherId]}
+              <div class="cross-row">
+                <span class="cross-arrow">→</span>
+                <span class="cross-name">{o?.name ?? otherId.slice(0, 12)}</span>
+                <span class="cross-count">{count} same_as pairs</span>
+              </div>
+            {/each}
+          </div>
+        {/if}
 
         {#if filesByLang.length > 0}
           <h3>Languages</h3>
@@ -537,16 +583,95 @@
     overflow-y: auto;
     max-height: calc(100vh - 200px);
   }
+  .src-head {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 6px;
+  }
+  .host-pill {
+    font-size: 10px;
+    font-weight: 700;
+    padding: 2px 8px;
+    border-radius: 9px;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+  }
+  .link-btn {
+    margin-left: auto;
+    background: #ffffff;
+    color: #1f2328;
+    border: 1px solid #d0d7de;
+    padding: 4px 10px;
+    border-radius: 5px;
+    font-size: 11px;
+    font-family: inherit;
+    cursor: pointer;
+  }
+  .link-btn:hover:not(:disabled) {
+    background: #fef3c7;
+    border-color: #fde047;
+  }
+  .link-banner {
+    background: #f0fdf4;
+    border: 1px solid #bbf7d0;
+    color: #166534;
+    border-radius: 6px;
+    padding: 8px 12px;
+    margin: 10px 0;
+    font-size: 12px;
+  }
   .meta {
     display: flex;
     flex-direction: column;
-    gap: 2px;
+    gap: 4px;
     font-size: 11px;
     color: #6b7280;
+    margin-bottom: 8px;
+  }
+  .meta strong {
+    color: #1f2328;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+    font-size: 10px;
+    margin-right: 3px;
   }
   .meta code {
     color: #1f2328;
     font-family: "Fira Code", monospace;
+  }
+  .cross-list {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    margin-bottom: 8px;
+  }
+  .cross-row {
+    display: grid;
+    grid-template-columns: 16px 1fr 120px;
+    gap: 8px;
+    align-items: center;
+    background: #fafbfc;
+    border: 1px solid #e6e8eb;
+    border-radius: 5px;
+    padding: 5px 10px;
+    font-size: 12px;
+  }
+  .cross-arrow {
+    color: #fbbf24;
+    font-weight: 700;
+    text-align: center;
+  }
+  .cross-name {
+    color: #1f2328;
+    font-weight: 500;
+  }
+  .cross-count {
+    color: #b45309;
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+    text-align: right;
   }
   .lang-row {
     display: flex;
