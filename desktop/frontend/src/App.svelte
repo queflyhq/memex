@@ -8,7 +8,7 @@
     GetTasks,
     GetSkills,
   } from "../wailsjs/go/main/App.js";
-  import qfBadge from "./assets/quefly-badge.png";
+  import qfBadge from "./assets/quefly-badge.svg";
   import Dashboard from "./routes/Dashboard.svelte";
   import Graph from "./routes/Graph.svelte";
   import Concepts from "./routes/Concepts.svelte";
@@ -50,10 +50,7 @@
   <aside class="sidebar">
     <div class="brand">
       <img src={qfBadge} alt="Quefly" class="badge" />
-      <div class="brand-text">
-        <div class="brand-name">memex-desktop</div>
-        <div class="brand-sub">by Quefly</div>
-      </div>
+      <span class="brand-name">memeX</span>
     </div>
     <nav>
       {#each tabs as t}
@@ -125,7 +122,7 @@
     display: flex;
     align-items: center;
     gap: 12px;
-    margin-bottom: 26px;
+    margin-bottom: 28px;
     padding: 4px 6px;
   }
   .badge {
@@ -134,21 +131,14 @@
     object-fit: contain;
     flex-shrink: 0;
   }
-  .brand-text {
-    display: flex;
-    flex-direction: column;
-    line-height: 1.15;
-  }
   .brand-name {
-    font-size: 15px;
-    font-weight: 700;
+    font-family: "Plus Jakarta Sans", -apple-system, BlinkMacSystemFont,
+      "Segoe UI", sans-serif;
+    font-size: 22px;
+    font-weight: 800;
     color: #1f2328;
-    letter-spacing: -0.01em;
-  }
-  .brand-sub {
-    font-size: 11px;
-    color: #6b7280;
-    margin-top: 1px;
+    letter-spacing: -0.03em;
+    line-height: 1;
   }
   nav {
     display: flex;
