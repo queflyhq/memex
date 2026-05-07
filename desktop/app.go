@@ -335,6 +335,41 @@ func (a *App) GetNodeNeighborhood(conceptID string) (map[string]any, error) {
 	return out, nil
 }
 
+// AddCodeSource registers a directory as a memex source and (optionally)
+// indexes it. POST /add-source isn't a daemon endpoint yet so we shell
+// out to `memex source add`. Synchronous — returns when indexing finishes.
+func (a *App) AddCodeSource(path string, indexNow bool) (map[string]any, error) {
+	args := []string{"source", "add", path}
+	if !indexNow {
+		args = append(args, "--no-index")
+	}
+	cmd := exec.Command("memex", args...)
+	out, err := cmd.CombinedOutput()
+	result := map[string]any{
+		"path":   path,
+		"output": string(out),
+	}
+	if err != nil {
+		result["error"] = err.Error()
+		return result, nil
+	}
+	result["ok"] = true
+	return result, nil
+}
+
+// ListCodeSources returns every kind=source concept (registered codebases).
+func (a *App) ListCodeSources() (map[string]any, error) {
+	body, _, err := a.daemonGet("/concepts?kind=source&limit=200")
+	if err != nil {
+		return nil, err
+	}
+	var out map[string]any
+	if err := json.Unmarshal(body, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // GetSchema returns the DuckDB schema (tables + columns + row counts).
 func (a *App) GetSchema() (map[string]any, error) {
 	body, _, err := a.daemonGet("/schema")

@@ -12,6 +12,8 @@
   let conceptCount = 0;
   let edgeCount = 0;
   let selected: any = null;
+  let showIsolated = false;
+  let isolatedCount = 0;
 
   // Quefly-themed palette — yellows, blacks, slate-grays for the
   // white background. Each kind gets a distinct hue while keeping
@@ -72,6 +74,20 @@
       );
       edgeCount = visibleEdges.length;
 
+      // Identify orphan nodes — those with no edges in the visible set.
+      // Default behaviour: hide them so the graph reads like a graph, not
+      // a confetti scatter. User can toggle them back on.
+      const connected = new Set<string>();
+      for (const e of visibleEdges) {
+        connected.add(e.from_id);
+        connected.add(e.to_id);
+      }
+      isolatedCount = concepts.length - connected.size;
+      const visibleConcepts = showIsolated
+        ? concepts
+        : concepts.filter((c: any) => connected.has(c.id));
+      conceptCount = visibleConcepts.length;
+
       const cytoscape = (await import("cytoscape")).default;
       if (cy) cy.destroy();
 
@@ -85,7 +101,7 @@
       cy = cytoscape({
         container,
         elements: [
-          ...concepts.map((c: any) => ({
+          ...visibleConcepts.map((c: any) => ({
             data: {
               id: c.id,
               label: c.name?.length > 32 ? c.name.slice(0, 30) + "…" : c.name,
@@ -111,17 +127,22 @@
               label: "data(label)",
               color: "#1f2328",
               "font-family": '"Plus Jakarta Sans", "Inter", sans-serif',
-              "font-size": 10,
+              "font-size": 11,
               "font-weight": 500,
-              "text-margin-y": -4,
-              "text-valign": "top",
+              "text-margin-y": 8,
+              "text-valign": "bottom",
               "text-halign": "center",
-              width: 16,
-              height: 16,
-              "border-width": 1,
+              "text-background-color": "#ffffff",
+              "text-background-opacity": 0.85,
+              "text-background-padding": 2,
+              "text-background-shape": "round-rectangle",
+              "text-wrap": "ellipsis",
+              "text-max-width": 130,
+              width: 22,
+              height: 22,
+              "border-width": 2,
               "border-color": "#ffffff",
               "border-opacity": 1,
-              "min-zoomed-font-size": 8,
             },
           },
           ...kindSelectors,
@@ -244,6 +265,10 @@
     </select>
     <button on:click={() => load()}>refresh</button>
     <button on:click={fitToScreen}>fit</button>
+    <label class="toggle">
+      <input type="checkbox" bind:checked={showIsolated} on:change={() => load()} />
+      show {isolatedCount} isolated
+    </label>
     <span class="muted">
       {#if !loading}
         {conceptCount} nodes · {edgeCount} edges
@@ -317,6 +342,16 @@
     font-size: 12px;
     cursor: pointer;
     font-family: inherit;
+  }
+  .toggle {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    color: #57606a;
+    cursor: pointer;
+  }
+  .toggle input {
+    cursor: pointer;
   }
   select:hover, button:hover {
     background: #f3f4f6;

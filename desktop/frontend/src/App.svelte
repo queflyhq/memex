@@ -16,12 +16,16 @@
   import Tasks from "./routes/Tasks.svelte";
   import Skills from "./routes/Skills.svelte";
   import Database from "./routes/Database.svelte";
+  import Sources from "./routes/Sources.svelte";
+  import Rules from "./routes/Rules.svelte";
 
   type Tab =
     | "dashboard"
     | "graph"
     | "concepts"
+    | "sources"
     | "tasks"
+    | "rules"
     | "skills"
     | "database"
     | "activity";
@@ -39,7 +43,9 @@
     { id: "dashboard", label: "Dashboard", emoji: "⌂" },
     { id: "graph", label: "Graph", emoji: "◫" },
     { id: "concepts", label: "Concepts", emoji: "☷" },
+    { id: "sources", label: "Sources", emoji: "▸" },
     { id: "tasks", label: "Tasks & Projects", emoji: "☑" },
+    { id: "rules", label: "Rules & AFK", emoji: "⛨" },
     { id: "skills", label: "Skills & Embeddings", emoji: "✦" },
     { id: "database", label: "Database", emoji: "▤" },
     { id: "activity", label: "Activity", emoji: "⌚" },
@@ -78,8 +84,12 @@
       <Graph {GetConcepts} {GetEdgesFor} />
     {:else if active === "concepts"}
       <Concepts {GetConcepts} />
+    {:else if active === "sources"}
+      <Sources />
     {:else if active === "tasks"}
       <Tasks {GetTasks} />
+    {:else if active === "rules"}
+      <Rules {GetConcepts} />
     {:else if active === "skills"}
       <Skills {GetSkills} />
     {:else if active === "database"}

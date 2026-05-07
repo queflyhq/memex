@@ -90,14 +90,31 @@ def _db_table_rows(
                 [table],
             ).fetchall()
         ]
-        # vectors table contains big arrays — sample a length, not full vector.
-        select = ", ".join(cols) if table != "vectors" else "id, len(embedding) AS dim"
-        rows = conn.execute(
-            f"SELECT {select} FROM {table} "
-            f"ORDER BY 1 LIMIT ? OFFSET ?",
-            [limit, offset],
-        ).fetchall()
-        cols_returned = cols if table != "vectors" else ["id", "dim"]
+        if table == "vectors":
+            # Join concept names so the user sees what each vector embeds.
+            # Show vector dim + magnitude + first 4 components as preview
+            # — never the full 384-float array.
+            select = (
+                "v.id, c.name, c.kind, "
+                "len(v.embedding) AS dim, "
+                "round(sqrt(list_aggregate(list_transform(v.embedding, x -> x*x), 'sum'))::DOUBLE, 3) AS magnitude, "
+                "list_transform(v.embedding[1:4], x -> round(x::DOUBLE, 3)) AS preview"
+            )
+            rows = conn.execute(
+                f"SELECT {select} FROM vectors v "
+                f"LEFT JOIN concepts c ON c.id = v.id "
+                f"ORDER BY c.kind, c.name LIMIT ? OFFSET ?",
+                [limit, offset],
+            ).fetchall()
+            cols_returned = ["id", "name", "kind", "dim", "magnitude", "preview"]
+        else:
+            select = ", ".join(cols)
+            rows = conn.execute(
+                f"SELECT {select} FROM {table} "
+                f"ORDER BY 1 LIMIT ? OFFSET ?",
+                [limit, offset],
+            ).fetchall()
+            cols_returned = cols
     return {
         "table": table,
         "columns": cols_returned,
@@ -151,7 +168,10 @@ def _compute_stats(
     # Episodic events. The store doesn't expose a "give me everything"
     # call, so use a generous limit for window-aware aggregation.
     events_window = engine.episodic.recent(limit=10_000)
-    if window_hours is not None:
+    # window_hours=None or 0 means "all time" — only filter when there's
+    # an actual positive window. Earlier we treated 0 as "last 0 hours"
+    # which always evaluated to an empty filter; that's a bug.
+    if window_hours is not None and window_hours > 0:
         cutoff = datetime.now(timezone.utc) - timedelta(hours=window_hours)
         events_window = [e for e in events_window if e.timestamp >= cutoff]
 
