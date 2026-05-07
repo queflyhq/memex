@@ -11,29 +11,31 @@
   let kindFilter = "";
   let conceptCount = 0;
   let edgeCount = 0;
+  let selected: any = null;
 
-  // Color per concept kind. Picked to match the dark theme + give each
-  // kind a recognisable hue.
+  // Quefly-themed palette — yellows, blacks, slate-grays for the
+  // white background. Each kind gets a distinct hue while keeping
+  // overall harmony with the brand.
   const KIND_COLOR: Record<string, string> = {
-    decision: "#4f7dff",
-    constraint: "#f5c878",
-    fact: "#9ea4b3",
-    pattern: "#b58aff",
-    person: "#7adfd0",
-    opinion: "#9ea4b3",
-    question: "#ffa726",
-    rejected: "#7c8190",
-    approach: "#6dd58e",
-    module: "#cc7eff",
-    endpoint: "#74a5ff",
-    task: "#2da46d",
-    milestone: "#4ec495",
-    project: "#a07cff",
-    source: "#ff7070",
-    file: "#9bb5e8",
-    symbol: "#74a5ff",
+    decision:   "#fbbf24",  // Quefly yellow — primary attention
+    constraint: "#f97316",  // amber/orange (rules)
+    fact:       "#64748b",  // slate
+    pattern:    "#a855f7",  // purple
+    person:     "#06b6d4",  // teal
+    opinion:    "#94a3b8",  // light slate
+    question:   "#ec4899",  // pink (open questions)
+    rejected:   "#cbd5e1",  // pale (de-emphasized)
+    approach:   "#16a34a",  // green (validation)
+    module:     "#8b5cf6",  // violet (architecture)
+    endpoint:   "#0ea5e9",  // sky (API surface)
+    task:       "#22c55e",  // green (active work)
+    milestone:  "#15803d",  // dark green
+    project:    "#7c3aed",  // dark violet
+    source:     "#dc2626",  // red (codebase)
+    file:       "#3b82f6",  // blue
+    symbol:     "#1f2328",  // black (Quefly brand)
   };
-  const DEFAULT_COLOR = "#5a6175";
+  const DEFAULT_COLOR = "#94a3b8";
 
   function colorForKind(kind: string): string {
     return KIND_COLOR[kind] ?? DEFAULT_COLOR;
@@ -43,119 +45,158 @@
     loading = true;
     error = null;
     try {
-      // Pull all concepts (capped at 1000 for the initial render).
-      const res = await GetConcepts(kindFilter, 1000, 0);
+      const res = await GetConcepts(kindFilter, 500, 0);
       const concepts = res.concepts ?? [];
       conceptCount = concepts.length;
 
-      // Pull edges per concept and dedup. For 100s of concepts this is
-      // O(N) HTTP — fine over localhost; future: server-side /edges-bulk.
+      // Pull edges per concept in parallel batches so first paint is fast.
       const edgeKey = (e: any) => `${e.from_id}|${e.to_id}|${e.kind}`;
       const seen = new Map<string, any>();
-      // Limit fan-out to keep first paint fast.
-      for (const c of concepts.slice(0, 250)) {
-        try {
-          const er = await GetEdgesFor(c.id);
-          for (const e of er.edges ?? []) seen.set(edgeKey(e), e);
-        } catch {
-          // skip
+      const batchSize = 12;
+      for (let i = 0; i < concepts.length; i += batchSize) {
+        const batch = concepts.slice(i, i + batchSize);
+        const results = await Promise.all(
+          batch.map((c: any) =>
+            GetEdgesFor(c.id).catch(() => ({ edges: [] }))
+          ),
+        );
+        for (const er of results) {
+          for (const e of (er?.edges ?? [])) seen.set(edgeKey(e), e);
         }
       }
       const edges = Array.from(seen.values());
-      edgeCount = edges.length;
+      // Filter edges to only those connecting two concepts we loaded.
+      const idSet = new Set(concepts.map((c: any) => c.id));
+      const visibleEdges = edges.filter(
+        (e: any) => idSet.has(e.from_id) && idSet.has(e.to_id),
+      );
+      edgeCount = visibleEdges.length;
 
-      // Lazy-load Cytoscape from the bundle once; reuse the instance.
       const cytoscape = (await import("cytoscape")).default;
       if (cy) cy.destroy();
+
+      // Build per-kind selectors so node colours work without
+      // function-style-values (which Cytoscape's static style refuses).
+      const kindSelectors = Object.entries(KIND_COLOR).map(([k, c]) => ({
+        selector: `node[kind = '${k}']`,
+        style: { "background-color": c },
+      }));
+
       cy = cytoscape({
         container,
         elements: [
           ...concepts.map((c: any) => ({
             data: {
               id: c.id,
-              label: c.name?.length > 30 ? c.name.slice(0, 28) + "…" : c.name,
+              label: c.name?.length > 32 ? c.name.slice(0, 30) + "…" : c.name,
               kind: c.kind,
               fullName: c.name,
               description: c.description,
             },
           })),
-          ...edges
-            .filter((e) => seen.size === seen.size) // typescript noise
-            .map((e: any) => ({
-              data: {
-                id: edgeKey(e),
-                source: e.from_id,
-                target: e.to_id,
-                kind: e.kind,
-              },
-            })),
+          ...visibleEdges.map((e: any) => ({
+            data: {
+              id: edgeKey(e),
+              source: e.from_id,
+              target: e.to_id,
+              kind: e.kind,
+            },
+          })),
         ],
         style: [
           {
             selector: "node",
             style: {
-              "background-color": "data(kind)",
-              "background-color-mapped": (ele: any) =>
-                colorForKind(ele.data("kind")),
+              "background-color": DEFAULT_COLOR,
               label: "data(label)",
-              color: "#aab1bd",
-              "font-size": 9,
+              color: "#1f2328",
+              "font-family": '"Plus Jakarta Sans", "Inter", sans-serif',
+              "font-size": 10,
+              "font-weight": 500,
               "text-margin-y": -4,
-              width: 14,
-              height: 14,
-              "border-width": 0,
+              "text-valign": "top",
+              "text-halign": "center",
+              width: 16,
+              height: 16,
+              "border-width": 1,
+              "border-color": "#ffffff",
+              "border-opacity": 1,
+              "min-zoomed-font-size": 8,
             },
           },
-          {
-            selector: "node",
-            style: {
-              "background-color": (ele: any) => colorForKind(ele.data("kind")),
-            },
-          },
+          ...kindSelectors,
           {
             selector: "edge",
             style: {
               "curve-style": "bezier",
               width: 1,
-              "line-color": "#2a2e39",
-              "target-arrow-color": "#2a2e39",
+              "line-color": "#cbd5e1",
+              "target-arrow-color": "#cbd5e1",
               "target-arrow-shape": "triangle",
               "arrow-scale": 0.7,
-              opacity: 0.7,
+              opacity: 0.85,
             },
           },
           {
             selector: "edge[kind = 'same_as']",
-            style: {
-              "line-style": "dashed",
-              "line-color": "#5b6580",
-            },
+            style: { "line-style": "dashed", "line-color": "#fbbf24",
+                     "target-arrow-color": "#fbbf24", width: 1.5 },
           },
           {
             selector: "edge[kind = 'calls']",
-            style: { "line-color": "#3a4154" },
+            style: { "line-color": "#94a3b8", "target-arrow-color": "#94a3b8" },
           },
           {
             selector: "edge[kind = 'defined_in']",
-            style: { "line-color": "#2e3548" },
+            style: { "line-color": "#e5e7eb", "target-arrow-color": "#e5e7eb" },
           },
           {
-            selector: ":selected",
+            selector: "edge[kind = 'part_of']",
+            style: { "line-color": "#e5e7eb", "target-arrow-color": "#e5e7eb" },
+          },
+          {
+            selector: "edge[kind = 'motivated_by']",
+            style: { "line-color": "#fbbf24", "target-arrow-color": "#fbbf24" },
+          },
+          {
+            selector: "edge[kind = 'implements']",
+            style: { "line-color": "#16a34a", "target-arrow-color": "#16a34a" },
+          },
+          {
+            selector: "edge[kind = 'supersedes']",
+            style: { "line-color": "#dc2626", "target-arrow-color": "#dc2626",
+                     "line-style": "dashed" },
+          },
+          {
+            selector: "node:selected",
             style: {
-              "border-width": 2,
-              "border-color": "#74a5ff",
+              "border-width": 3,
+              "border-color": "#fbbf24",
               "border-opacity": 1,
+            },
+          },
+          {
+            selector: "edge:selected",
+            style: {
+              width: 2.5,
+              "line-color": "#fbbf24",
+              "target-arrow-color": "#fbbf24",
             },
           },
         ],
         layout: {
           name: "cose",
           animate: false,
-          nodeRepulsion: 8000,
-          idealEdgeLength: 80,
-          padding: 20,
+          nodeRepulsion: 9000,
+          idealEdgeLength: 90,
+          padding: 30,
+          fit: true,
+          gravity: 1,
+          numIter: 1000,
         },
         wheelSensitivity: 0.2,
+        minZoom: 0.2,
+        maxZoom: 3,
       });
 
       cy.on("tap", "node", (evt: any) => {
@@ -167,6 +208,9 @@
           description: n.data("description"),
         };
       });
+      cy.on("tap", (evt: any) => {
+        if (evt.target === cy) selected = null;
+      });
     } catch (e: any) {
       error = String(e?.message || e);
     } finally {
@@ -174,17 +218,19 @@
     }
   }
 
-  let selected: any = null;
-
   onMount(() => load());
   onDestroy(() => {
     if (cy) cy.destroy();
   });
 
+  function fitToScreen() {
+    if (cy) cy.fit(undefined, 30);
+  }
+
   const kindOptions = [
     "", "decision", "constraint", "fact", "pattern", "approach",
     "task", "project", "module", "endpoint",
-    "source", "file", "symbol",
+    "source", "file", "symbol", "person", "opinion", "question",
   ];
 </script>
 
@@ -197,6 +243,7 @@
       {/each}
     </select>
     <button on:click={() => load()}>refresh</button>
+    <button on:click={fitToScreen}>fit</button>
     <span class="muted">
       {#if !loading}
         {conceptCount} nodes · {edgeCount} edges
@@ -205,21 +252,36 @@
   </div>
 </header>
 
+<div class="legend">
+  {#each Object.entries(KIND_COLOR) as [k, c]}
+    <span class="chip">
+      <span class="dot" style="background: {c}"></span>{k}
+    </span>
+  {/each}
+</div>
+
 <div class="graph-wrap">
   <div class="canvas" bind:this={container}></div>
   {#if loading}
     <div class="overlay"><span>building graph…</span></div>
   {:else if error}
     <div class="overlay"><span class="error">error: {error}</span></div>
+  {:else if conceptCount === 0}
+    <div class="overlay">
+      <span class="muted">no concepts of kind '{kindFilter || "any"}'</span>
+    </div>
   {/if}
   {#if selected}
     <aside class="detail">
       <button class="close" on:click={() => (selected = null)}>×</button>
-      <div class="kind-chip" style="background: {colorForKind(selected.kind)}22; color: {colorForKind(selected.kind)}">
+      <div
+        class="kind-chip"
+        style="background: {colorForKind(selected.kind)}; color: white"
+      >
         {selected.kind}
       </div>
       <h3>{selected.name}</h3>
-      <pre>{selected.description}</pre>
+      <pre>{selected.description ?? ""}</pre>
       <div class="muted">id: {selected.id}</div>
     </aside>
   {/if}
@@ -230,18 +292,20 @@
     display: flex;
     justify-content: space-between;
     align-items: center;
-    margin-bottom: 16px;
+    margin-bottom: 12px;
   }
   h1 {
     margin: 0;
     font-size: 22px;
     font-weight: 600;
     color: #1f2328;
+    font-family: "Plus Jakarta Sans", -apple-system, sans-serif;
+    letter-spacing: -0.02em;
   }
   .controls {
     display: flex;
     align-items: center;
-    gap: 12px;
+    gap: 10px;
     font-size: 12px;
   }
   select, button {
@@ -249,7 +313,7 @@
     color: #1f2328;
     border: 1px solid #d0d7de;
     padding: 5px 10px;
-    border-radius: 4px;
+    border-radius: 5px;
     font-size: 12px;
     cursor: pointer;
     font-family: inherit;
@@ -257,10 +321,33 @@
   select:hover, button:hover {
     background: #f3f4f6;
   }
+  .legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-bottom: 10px;
+  }
+  .chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    background: #fafbfc;
+    border: 1px solid #e6e8eb;
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-size: 11px;
+    color: #57606a;
+  }
+  .chip .dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
   .graph-wrap {
     position: relative;
     width: 100%;
-    height: calc(100vh - 130px);
+    height: calc(100vh - 180px);
     background: #ffffff;
     border: 1px solid #e6e8eb;
     border-radius: 6px;
@@ -288,37 +375,38 @@
     right: 12px;
     top: 12px;
     width: 320px;
-    max-height: 60%;
+    max-height: 70%;
     background: #ffffff;
     border: 1px solid #e6e8eb;
     border-radius: 8px;
     padding: 14px 16px 18px;
     overflow-y: auto;
-    box-shadow: 0 4px 12px rgba(31, 35, 40, 0.08);
+    box-shadow: 0 4px 12px rgba(31, 35, 40, 0.10);
   }
   .detail h3 {
     margin: 8px 0;
     font-size: 14px;
     font-weight: 600;
     color: #1f2328;
+    font-family: "Plus Jakarta Sans", -apple-system, sans-serif;
   }
   .detail pre {
-    font-family: -apple-system, "Segoe UI", sans-serif;
+    font-family: "Inter", -apple-system, sans-serif;
     font-size: 12px;
     color: #4b5563;
     white-space: pre-wrap;
     word-wrap: break-word;
     margin: 0 0 10px;
-    line-height: 1.4;
+    line-height: 1.45;
   }
   .kind-chip {
     display: inline-block;
-    padding: 2px 8px;
+    padding: 2px 9px;
     border-radius: 10px;
     font-size: 10px;
     text-transform: uppercase;
     letter-spacing: 0.5px;
-    font-weight: 600;
+    font-weight: 700;
   }
   .close {
     position: absolute;

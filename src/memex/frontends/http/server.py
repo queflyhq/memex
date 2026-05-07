@@ -343,6 +343,13 @@ class HTTPFrontend:
                 raise HTTPException(status_code=404, detail="not found")
             return c.model_dump(mode="json")
 
+        @app.delete("/nodes/{concept_id}", tags=["write"], dependencies=[Depends(check_auth)])
+        def delete_node(concept_id: str) -> dict[str, Any]:
+            """Hard-delete a concept and every edge touching it.
+            Powers the desktop's task / concept delete actions."""
+            removed = engine.delete(concept_id)
+            return {"deleted": removed, "id": concept_id}
+
         @app.post("/edges", tags=["write"], dependencies=[Depends(check_auth)])
         def add_edge(body: AddEdgeBody = Body(...)) -> dict[str, str]:
             engine.link(**body.model_dump())
@@ -399,6 +406,61 @@ class HTTPFrontend:
             the graph view to expand a node's neighborhood."""
             edges = engine.edges_for(concept_id)
             return {"edges": [e.model_dump(mode="json") for e in edges]}
+
+        @app.get("/nodes/{concept_id}/history", tags=["read"], dependencies=[Depends(check_auth)])
+        def node_history(concept_id: str, limit: int = 20) -> dict[str, Any]:
+            """Versioned history of a concept — every edit's prior snapshot
+            kept in concept_history. Powers the desktop's "task history" view."""
+            return {"history": engine.semantic.history(concept_id, limit=limit)}
+
+        @app.get("/nodes/{concept_id}/neighborhood", tags=["read"], dependencies=[Depends(check_auth)])
+        def node_neighborhood(concept_id: str) -> dict[str, Any]:
+            """Full "associated with" surface for a concept — neighbors via
+            every typed edge, every prior version (concept_history), and
+            every episodic event whose payload references this concept's id.
+
+            This is the "what all is associated with this task" view in the
+            desktop: linked decisions/constraints/files/symbols, the task's
+            edit history, and the events (auto-approvals, observations,
+            corrections) that touched it.
+            """
+            edges = engine.edges_for(concept_id)
+            neighbor_ids: set[str] = set()
+            for e in edges:
+                if e.from_id == concept_id:
+                    neighbor_ids.add(e.to_id)
+                else:
+                    neighbor_ids.add(e.from_id)
+            neighbors: list[dict[str, Any]] = []
+            for nid in neighbor_ids:
+                c = engine.get(nid)
+                if c is not None:
+                    neighbors.append(c.model_dump(mode="json"))
+
+            # Episodic events whose payload mentions this id — concept_added
+            # / observe(payload={id: ...}) / spawned_from references / etc.
+            related_events: list[dict[str, Any]] = []
+            for ev in engine.episodic.recent(limit=2000):
+                payload = ev.payload or {}
+                hit = False
+                for v in payload.values():
+                    if isinstance(v, str) and v == concept_id:
+                        hit = True; break
+                    if isinstance(v, list) and concept_id in v:
+                        hit = True; break
+                if hit:
+                    related_events.append(ev.model_dump(mode="json"))
+                if len(related_events) >= 100:
+                    break
+
+            history = engine.semantic.history(concept_id, limit=20)
+
+            return {
+                "neighbors": neighbors,
+                "edges": [e.model_dump(mode="json") for e in edges],
+                "events": related_events,
+                "history": history,
+            }
 
         @app.get("/events", tags=["read"], dependencies=[Depends(check_auth)])
         def list_events(

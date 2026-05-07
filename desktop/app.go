@@ -3,6 +3,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -15,6 +16,9 @@ import (
 	"strings"
 	"time"
 )
+
+// bytesReader is a tiny helper to wrap a []byte as an io.Reader for HTTP bodies.
+func bytesReader(b []byte) io.Reader { return bytes.NewReader(b) }
 
 // App is the Wails-bound struct exposing methods to the Svelte frontend.
 type App struct {
@@ -264,6 +268,71 @@ func (a *App) GetSkills() (map[string]any, error) {
 		"validations_count": prog["validations_count"],
 		"validated_skills":  prog["validated_skills"],
 	}, nil
+}
+
+// UpdateTaskStatus PATCHes /tasks/{id} to change a task's workflow state.
+func (a *App) UpdateTaskStatus(taskID string, status string) (map[string]any, error) {
+	body := []byte(fmt.Sprintf(`{"status":%q}`, status))
+	url := fmt.Sprintf("%s/tasks/%s", a.daemonURL, taskID)
+	req, err := http.NewRequestWithContext(a.ctx, "PATCH", url,
+		bytesReader(body))
+	if err != nil {
+		return nil, err
+	}
+	a.applyAuth(req)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := a.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		return nil, fmt.Errorf("update_task %s → %d: %s", taskID, resp.StatusCode, string(respBody))
+	}
+	var out map[string]any
+	if err := json.Unmarshal(respBody, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// DeleteNode hard-deletes a concept (used by Tasks for "drop task" action).
+func (a *App) DeleteNode(conceptID string) (map[string]any, error) {
+	url := fmt.Sprintf("%s/nodes/%s", a.daemonURL, conceptID)
+	req, err := http.NewRequestWithContext(a.ctx, "DELETE", url, nil)
+	if err != nil {
+		return nil, err
+	}
+	a.applyAuth(req)
+	resp, err := a.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		return nil, fmt.Errorf("delete %s → %d: %s", conceptID, resp.StatusCode, string(respBody))
+	}
+	var out map[string]any
+	if err := json.Unmarshal(respBody, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// GetNodeNeighborhood returns linked concepts + edges + history + events
+// for a single concept. Powers the task-detail side panel.
+func (a *App) GetNodeNeighborhood(conceptID string) (map[string]any, error) {
+	body, _, err := a.daemonGet("/nodes/" + conceptID + "/neighborhood")
+	if err != nil {
+		return nil, err
+	}
+	var out map[string]any
+	if err := json.Unmarshal(body, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 // GetSchema returns the DuckDB schema (tables + columns + row counts).
