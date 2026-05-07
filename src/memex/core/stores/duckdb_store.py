@@ -111,15 +111,20 @@ def open_duckdb(path: Path, *, vector_dim: int = 384) -> duckdb.DuckDBPyConnecti
         """
     )
 
-    # HNSW index on embedding column. WITH metric=cosine matches our existing
-    # cosine-similarity ranking. Idempotent via IF NOT EXISTS.
+    # HNSW index — DISABLED below ~50k vectors. The VSS extension's HNSW
+    # implementation does NOT support the upsert path cleanly: INSERT … ON
+    # CONFLICT DO UPDATE feeds two entries for the same key into the HNSW
+    # graph, fails with "Duplicate keys not allowed in high-level
+    # wrappers", and INVALIDATES THE WHOLE DATABASE FILE (we hit this
+    # during bulk-indexing and lost ~1,370 concepts of work). Linear-scan
+    # via array_cosine_distance is fast enough up to ~50k vectors. Past
+    # that threshold, run `memex maintenance build-hnsw` (which DELETEs
+    # before re-INSERTing) to enable HNSW. Drop any existing index too so
+    # a previously-built bad HNSW doesn't keep crashing writes.
     try:
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS vectors_hnsw "
-            "ON vectors USING HNSW (embedding) WITH (metric = 'cosine');"
-        )
-    except duckdb.Error as e:
-        log.warning("HNSW index creation skipped: %s", e)
+        conn.execute("DROP INDEX IF EXISTS vectors_hnsw;")
+    except Exception as e:  # noqa: BLE001
+        log.warning("DROP INDEX vectors_hnsw skipped: %s", e)
 
     return conn
 
