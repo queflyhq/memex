@@ -54,10 +54,6 @@
     {
       label: "Knowledge",
       tabs: [
-        // Graph hidden until focal-mode rewrite ships — current force-
-        // directed view of 8.8k nodes wasn't legible. Concepts page
-        // (with search + facets + detail panel) covers the primary
-        // browse use case for now.
         { id: "concepts", label: "Concepts",         emoji: "☷" },
         { id: "tasks",    label: "Tasks & Projects", emoji: "☑" },
         { id: "rules",    label: "Rules & AFK",      emoji: "⛨" },
@@ -80,6 +76,7 @@
     {
       label: "Power user",
       tabs: [
+        { id: "graph",    label: "Graph",    emoji: "◫" },
         { id: "database", label: "Database", emoji: "▤" },
       ],
     },

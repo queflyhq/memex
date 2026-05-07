@@ -207,6 +207,25 @@ func (a *App) GetEdgesFor(conceptID string) (map[string]any, error) {
 	return out, nil
 }
 
+// EdgesBulk returns all edges for a comma-separated list of concept ids
+// in one call (vs N round-trips). Used by the Graph view.
+func (a *App) EdgesBulk(ids []string, limit int) (map[string]any, error) {
+	if limit <= 0 {
+		limit = 5000
+	}
+	idsParam := strings.Join(ids, ",")
+	q := fmt.Sprintf("?limit=%d&ids=%s", limit, idsParam)
+	body, _, err := a.daemonGet("/edges-bulk" + q)
+	if err != nil {
+		return nil, err
+	}
+	var out map[string]any
+	if err := json.Unmarshal(body, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // GetEvents returns episodic events (optional kind filter).
 func (a *App) GetEvents(kind string, limit int) (map[string]any, error) {
 	if limit <= 0 {

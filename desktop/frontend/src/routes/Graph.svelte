@@ -1,6 +1,8 @@
 <script lang="ts">
   import { onMount, onDestroy } from "svelte";
 
+  import { EdgesBulk } from "../../wailsjs/go/main/App.js";
+
   export let GetConcepts: (kind: string, limit: number, offset: number) => Promise<any>;
   export let GetEdgesFor: (id: string) => Promise<any>;
 
@@ -47,29 +49,19 @@
     loading = true;
     error = null;
     try {
-      const res = await GetConcepts(kindFilter, 500, 0);
+      // Pull a bounded slice + all their edges in ONE round-trip via
+      // /edges-bulk. Tighter cap (200 concepts) keeps the layout legible
+      // — past 500 nodes cose can't lay out cleanly on a desktop window.
+      const limit = kindFilter ? 500 : 200;
+      const res = await GetConcepts(kindFilter, limit, 0);
       const concepts = res.concepts ?? [];
-      conceptCount = concepts.length;
 
-      // Pull edges per concept in parallel batches so first paint is fast.
-      const edgeKey = (e: any) => `${e.from_id}|${e.to_id}|${e.kind}`;
-      const seen = new Map<string, any>();
-      const batchSize = 12;
-      for (let i = 0; i < concepts.length; i += batchSize) {
-        const batch = concepts.slice(i, i + batchSize);
-        const results = await Promise.all(
-          batch.map((c: any) =>
-            GetEdgesFor(c.id).catch(() => ({ edges: [] }))
-          ),
-        );
-        for (const er of results) {
-          for (const e of (er?.edges ?? [])) seen.set(edgeKey(e), e);
-        }
-      }
-      const edges = Array.from(seen.values());
-      // Filter edges to only those connecting two concepts we loaded.
-      const idSet = new Set(concepts.map((c: any) => c.id));
-      const visibleEdges = edges.filter(
+      const ids = concepts.map((c: any) => c.id);
+      const edgeRes = await EdgesBulk(ids, 8000).catch(() => ({ edges: [] }));
+      const allEdges = edgeRes?.edges ?? [];
+      // Keep only edges connecting two concepts we actually loaded.
+      const idSet = new Set(ids);
+      const visibleEdges = allEdges.filter(
         (e: any) => idSet.has(e.from_id) && idSet.has(e.to_id),
       );
       edgeCount = visibleEdges.length;
