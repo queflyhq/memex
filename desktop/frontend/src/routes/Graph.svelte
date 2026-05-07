@@ -65,6 +65,7 @@
         (e: any) => idSet.has(e.from_id) && idSet.has(e.to_id),
       );
       edgeCount = visibleEdges.length;
+      const edgeKey = (e: any) => `${e.from_id}|${e.to_id}|${e.kind}`;
 
       // Identify orphan nodes — those with no edges in the visible set.
       // Default behaviour: hide them so the graph reads like a graph, not
