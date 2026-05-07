@@ -249,6 +249,51 @@ class DuckDBSemanticStore:
             rows = self.conn.execute("SELECT * FROM concepts").fetchall()
         return [_row_to_concept(r) for r in rows]
 
+    def find_by_kind(self, kind: NodeKind) -> list[Concept]:
+        """All concepts of a given kind. Used by codebase memory to walk
+        sources / files / symbols without scanning the whole table."""
+        with self._lock:
+            rows = self.conn.execute(
+                "SELECT * FROM concepts WHERE kind = ?", [kind.value]
+            ).fetchall()
+        return [_row_to_concept(r) for r in rows]
+
+    def edges_for(self, concept_id: str) -> list[Edge]:
+        """Every edge touching a node — outgoing + incoming. Single hop."""
+        with self._lock:
+            rows = self.conn.execute(
+                """
+                SELECT from_id, to_id, kind, source, confidence,
+                       created_at, last_confirmed_at, metadata
+                FROM edges
+                WHERE from_id = ? OR to_id = ?
+                """,
+                [concept_id, concept_id],
+            ).fetchall()
+        return [_row_to_edge(r) for r in rows]
+
+    def delete_concept(self, concept_id: str) -> bool:
+        """Hard-delete a concept and every edge touching it. Returns True
+        when something was removed. Used by codebase memory's reindex
+        path; callers that want soft-delete should not use this."""
+        with self._lock:
+            existing = self.conn.execute(
+                "SELECT 1 FROM concepts WHERE id = ?", [concept_id]
+            ).fetchone()
+            if existing is None:
+                return False
+            self.conn.execute(
+                "DELETE FROM edges WHERE from_id = ? OR to_id = ?",
+                [concept_id, concept_id],
+            )
+            self.conn.execute(
+                "DELETE FROM concept_history WHERE id = ?", [concept_id]
+            )
+            self.conn.execute(
+                "DELETE FROM concepts WHERE id = ?", [concept_id]
+            )
+        return True
+
     def neighbors(
         self,
         concept_id: str,

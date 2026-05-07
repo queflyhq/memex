@@ -200,6 +200,63 @@ class Engine:
     def get(self, concept_id: str) -> Concept | None:
         return self.semantic.get_concept(concept_id)
 
+    def find_by_kind(self, kind: NodeKind | str) -> list[Concept]:
+        """Every concept of a given kind. Used by codebase memory to walk
+        sources / files / symbols without re-grepping the whole graph."""
+        k = NodeKind(kind) if isinstance(kind, str) else kind
+        return self.semantic.find_by_kind(k)
+
+    def edges_for(self, concept_id: str) -> list[Edge]:
+        """Every edge touching `concept_id` — outgoing + incoming. Single hop.
+
+        Use this when you want to walk the immediate neighborhood without
+        the recursive depth-walk semantics of `neighbors`.
+        """
+        return self.semantic.edges_for(concept_id)
+
+    # ---- mutations -----------------------------------------------------
+
+    def put(self, c: Concept) -> Concept:
+        """Upsert a concept. Existing-id writes preserve history via the
+        store's versioning; bumping `last_confirmed_at` is the caller's
+        responsibility (set it before calling)."""
+        self.semantic.add_concept(c)
+        self.bm25.mark_dirty()
+        self._maybe_index_vector(c)
+        return c
+
+    def delete(self, concept_id: str) -> bool:
+        """Hard-delete a concept and every edge touching it. Returns True
+        when something was removed.
+
+        Used by codebase memory's reindex path. Callers that want soft-delete
+        (preserving the concept_history record) should NOT use this — they
+        should mark the concept as obsolete via metadata instead.
+        """
+        existing = self.semantic.get_concept(concept_id)
+        if existing is None:
+            return False
+        removed = self.semantic.delete_concept(concept_id)
+        if removed:
+            self.bm25.mark_dirty()
+            try:
+                self.vectors.remove(concept_id)
+            except Exception:  # noqa: BLE001
+                # Vector store may not have an entry for non-embedded concepts.
+                pass
+            self.episodic.append(
+                EpisodicEvent(
+                    kind="concept_deleted",
+                    actor=existing.source,
+                    payload={
+                        "id": concept_id,
+                        "name": existing.name,
+                        "kind": existing.kind.value,
+                    },
+                )
+            )
+        return removed
+
     def recall(
         self,
         query: str,

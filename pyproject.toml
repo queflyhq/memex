@@ -44,11 +44,37 @@ dependencies = [
     "rank-bm25>=0.2.2",
     "numpy>=1.26",
     "fastembed>=0.3",
+    # Codebase memory — typed-graph chunking via tree-sitter. The baseline
+    # set covers AuthFI's full stack (Python, Go, JS/TS, Java for services;
+    # Svelte/HCL/YAML/Bash for UI + infra) so memex works out of the box on
+    # any project the user is likely to point it at. Add other languages
+    # via the `code-<lang>` extras below.
+    "tree-sitter>=0.23",
+    "tree-sitter-python>=0.23",
+    "tree-sitter-go>=0.23",
+    "tree-sitter-javascript>=0.23",
+    "tree-sitter-typescript>=0.23",
+    "tree-sitter-java>=0.23",
+    "tree-sitter-bash>=0.23",
+    "tree-sitter-yaml>=0.7",
+    "tree-sitter-hcl>=1.1",
+    "tree-sitter-svelte>=1.0",
 ]
 
 [project.optional-dependencies]
 embed = ["fastembed>=0.3"]
-all = ["fastembed>=0.3"]
+# Additional code chunkers — opt-in for stacks beyond the baseline five.
+code-rust = ["tree-sitter-rust>=0.23"]
+code-cpp = ["tree-sitter-cpp>=0.23"]
+code-csharp = ["tree-sitter-c-sharp>=0.23"]
+code-ruby = ["tree-sitter-ruby>=0.23"]
+all = [
+    "fastembed>=0.3",
+    "tree-sitter-rust>=0.23",
+    "tree-sitter-cpp>=0.23",
+    "tree-sitter-c-sharp>=0.23",
+    "tree-sitter-ruby>=0.23",
+]
 
 [project.scripts]
 memex = "memex.frontends.cli.main:app"

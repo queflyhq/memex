@@ -254,6 +254,119 @@ class MCPServer:
             return render_recall(result)
 
         @mcp.tool()
+        def recall_code(
+            query: str,
+            source_id: str | None = None,
+            symbol_kind: str | None = None,
+            expand_hops: int = 1,
+            limit: int = 20,
+        ) -> dict[str, Any]:
+            """Find typed-graph symbols by name + their neighborhood.
+
+            This is NOT a vector-RAG search. memex returns matched symbols
+            (class/function/method/interface/...) with their defining file,
+            parent class, cross-repo `same_as` siblings, and any decisions/
+            constraints that mention them. Use it BEFORE `recall()` when
+            the question is about a specific identifier in indexed code.
+
+            Pre-condition: at least one source must be registered + indexed.
+            See `memex source add` (CLI) or ask the user to register a repo
+            first if `recall_code` returns no matches and the user expected
+            results.
+
+            WHEN TO CALL:
+              - User asks "where is X defined" / "what calls X" / "what's
+                in <file>" — anything that names a code identifier.
+              - You're about to edit a function and want to see its
+                callers + relevant decisions.
+              - Cross-repo: "JWTClaims is used in 3 services — show all
+                of them" (slice B linker pass surfaces same_as siblings).
+
+            WHEN NOT TO CALL:
+              - User asks about prior decisions / constraints / facts
+                — use plain `recall()` for the concept-memory layer.
+              - User asks "how do I" / "what's the right way" — those
+                are skill / approach questions, use `validate()`.
+              - The query is a free-form NL question — slice A is
+                name-anchored. recall_code with phrase-shaped queries
+                returns weak results; future slices add embedding rank.
+
+            PARAMETERS:
+              query (str): symbol name (exact > prefix > substring) or
+                signature substring.
+              source_id (str, optional): limit to a single registered
+                source by its concept id.
+              symbol_kind (str, optional): filter by symbol kind:
+                class | function | method | interface | struct | enum |
+                type_alias | const | component | resource | manifest.
+              expand_hops (int, default=1): how much neighborhood to
+                surface. 0 = just direct matches; 1 = + defining file +
+                parent class + cross-repo siblings.
+              limit (int, default=20): max number of primary matches.
+
+            RETURNS:
+              {
+                "matches": [<Concept>...],         primary symbols matching
+                "neighborhood": [<Concept>...],    files / parents / siblings
+                "edges": [<Edge>...],              the connections
+                "related_concepts": [<Concept>...] decisions/constraints
+                                                   that mention any matched
+                                                   symbol — the "full picture"
+                                                   surface (architecture
+                                                   decisions, tech-debt notes,
+                                                   user corrections).
+                "query": "<echoed query>",
+                "expand_hops": <int>,
+                "degraded": <bool>,                true when the query ran
+                                                   without vector ranking
+                                                   (slice A always degraded:
+                                                   true; slice A.1 enables it).
+                "degraded_reason": <str|null>
+              }
+
+            EXAMPLE:
+              recall_code(query="RegistryClient")
+              # returns: 1 match (the class), neighborhood (file +
+              #   methods __init__/find_entry/fetch_skill/...), 5+ edges,
+              #   plus any decision concepts mentioning "RegistryClient".
+            """
+            from memex.codebase import recall_code as _recall_code
+
+            try:
+                result = _recall_code(
+                    engine,
+                    query=query,
+                    source_id=source_id,
+                    symbol_kind=symbol_kind,
+                    expand_hops=expand_hops,
+                    limit=limit,
+                )
+            except AttributeError as e:
+                # Older Backend (HTTP MemexClient) without find_by_kind/edges_for.
+                return {
+                    "matches": [],
+                    "neighborhood": [],
+                    "edges": [],
+                    "related_concepts": [],
+                    "query": query,
+                    "expand_hops": expand_hops,
+                    "degraded": True,
+                    "degraded_reason": (
+                        "backend missing codebase-memory primitives: "
+                        f"{e}. Run via in-process engine or upgrade daemon."
+                    ),
+                }
+
+            payload = result.to_dict()
+            # Slice A always reports degraded:true because vector ranking
+            # isn't yet wired into recall_code (see slice A.1).
+            payload["degraded"] = True
+            payload["degraded_reason"] = (
+                "slice A: name-anchored only; vector similarity ranking lands in slice A.1"
+            )
+            return payload
+
+        @mcp.tool()
         def add_node(
             name: str,
             description: str = "",

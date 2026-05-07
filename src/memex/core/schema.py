@@ -34,6 +34,11 @@ class NodeKind(str, Enum):
     task = "task"
     milestone = "milestone"
     project = "project"
+    # Codebase-memory primitives — typed nodes (NOT opaque text chunks).
+    # `metadata` carries language, signature, line range, parent symbol, etc.
+    source = "source"  # a registered codebase / repo
+    file = "file"      # a source file inside a registered source
+    symbol = "symbol"  # a typed AST declaration: class|function|method|...
 
 
 class EdgeKind(str, Enum):
@@ -50,6 +55,10 @@ class EdgeKind(str, Enum):
     blocks = "blocks"              # task A blocks task B
     part_of = "part_of"            # task is part of milestone is part of project
     spawned_from = "spawned_from"  # task created from an episodic event
+    # Codebase-memory edges — explicit AST relations, not embedding similarity.
+    defined_in = "defined_in"      # symbol → file (its definition site)
+    imports = "imports"            # file → file (or file → external module)
+    extends = "extends"            # symbol → symbol (class inheritance)
 
 
 class Source(str, Enum):

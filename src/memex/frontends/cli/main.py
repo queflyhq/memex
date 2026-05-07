@@ -1525,5 +1525,193 @@ def upstream_test(name: str) -> None:
         agg.stop()
 
 
+# ----------------------------------------------------------------------------
+# Codebase memory — `memex source` subcommands + `memex recall-code` query.
+# ----------------------------------------------------------------------------
+
+
+source_app = typer.Typer(
+    name="source",
+    help="Manage indexed codebases. memex chunks them into a typed graph "
+         "(source → file → symbol) — not into fuzzy text snippets.",
+    no_args_is_help=True,
+)
+app.add_typer(source_app)
+
+
+@source_app.command("add")
+def source_add(
+    path: Annotated[Path, typer.Argument(
+        help="Filesystem path to the codebase root.",
+        exists=True, file_okay=False, dir_okay=True, resolve_path=True,
+    )],
+    name: Annotated[str | None, typer.Option(
+        "--name", "-n", help="Display name (defaults to slug from path)."
+    )] = None,
+    no_index: Annotated[bool, typer.Option(
+        "--no-index", help="Register the source without immediately indexing.",
+    )] = False,
+) -> None:
+    """Register and (by default) index a codebase."""
+    from memex.codebase import add_source as cb_add_source, index_source
+
+    settings = get_settings()
+    engine = Engine.build_default(settings)
+    try:
+        src = cb_add_source(engine, path, name=name)
+        console.print(
+            f"[green]registered[/green] {src.name} → [dim]{src.metadata['path']}[/dim]"
+        )
+        console.print(f"  id: [cyan]{src.id}[/cyan]")
+        if no_index:
+            console.print("[yellow]skipped indexing[/yellow] (--no-index)")
+            return
+        with console.status("indexing…"):
+            result = index_source(engine, src.id)
+        console.print(
+            f"[green]indexed[/green] {result.files_indexed} files, "
+            f"{result.symbols_indexed} symbols, "
+            f"{result.skipped_files} skipped"
+        )
+        if result.languages:
+            langs = ", ".join(f"{k}: {v}" for k, v in sorted(result.languages.items()))
+            console.print(f"  languages: [dim]{langs}[/dim]")
+    finally:
+        engine.close()
+
+
+@source_app.command("list")
+def source_list() -> None:
+    """List registered codebases."""
+    from memex.codebase import list_sources
+
+    settings = get_settings()
+    engine = Engine.build_default(settings)
+    try:
+        sources = list_sources(engine)
+        if not sources:
+            console.print("[dim]no sources registered[/dim]")
+            return
+        table = Table(title=f"{len(sources)} source(s)")
+        table.add_column("id", style="cyan")
+        table.add_column("name", style="bold")
+        table.add_column("path", style="dim")
+        table.add_column("files")
+        table.add_column("symbols")
+        table.add_column("last indexed", style="dim")
+        for s in sources:
+            md = s.metadata
+            table.add_row(
+                s.id,
+                s.name,
+                md.get("path", "?"),
+                str(md.get("indexed_files", 0)),
+                str(md.get("indexed_symbols", 0)),
+                md.get("last_indexed_at") or "—",
+            )
+        console.print(table)
+    finally:
+        engine.close()
+
+
+@source_app.command("remove")
+def source_remove(
+    source_id: Annotated[str, typer.Argument(help="Source concept id (c_…)")],
+) -> None:
+    """Delete a source plus every file + symbol it owns."""
+    from memex.codebase import remove_source
+
+    settings = get_settings()
+    engine = Engine.build_default(settings)
+    try:
+        deleted = remove_source(engine, source_id)
+        console.print(f"[green]removed[/green] {deleted} concept(s)")
+    finally:
+        engine.close()
+
+
+@source_app.command("reindex")
+def source_reindex(
+    source_id: Annotated[str, typer.Argument(help="Source concept id (c_…)")],
+) -> None:
+    """Drop existing chunks and re-index from disk."""
+    from memex.codebase import reindex_source
+
+    settings = get_settings()
+    engine = Engine.build_default(settings)
+    try:
+        with console.status("re-indexing…"):
+            result = reindex_source(engine, source_id)
+        console.print(
+            f"[green]re-indexed[/green] {result.files_indexed} files, "
+            f"{result.symbols_indexed} symbols"
+        )
+    finally:
+        engine.close()
+
+
+@app.command(name="recall-code")
+def recall_code_cmd(
+    query: Annotated[str, typer.Argument(help="Symbol name or signature substring.")],
+    source: Annotated[str | None, typer.Option(
+        "--source", help="Limit to a single registered source (id).",
+    )] = None,
+    kind: Annotated[str | None, typer.Option(
+        "--kind", help="Filter by symbol kind: class|function|method|interface|…",
+    )] = None,
+    expand: Annotated[int, typer.Option(
+        "--expand", help="Edges of neighborhood to surface (0=just matches).",
+    )] = 1,
+    limit: Annotated[int, typer.Option("--limit", help="Max matches.")] = 20,
+) -> None:
+    """Recall symbols by name + signature, with their typed-graph neighborhood.
+
+    Returns matched symbols, their defining file + parent class, cross-repo
+    `same_as` siblings (slice B), and any concept-memory nodes that mention
+    them — NOT a fuzzy snippet list. See `memex source add` first.
+    """
+    from memex.codebase import recall_code as cb_recall
+
+    settings = get_settings()
+    engine = Engine.build_default(settings)
+    try:
+        result = cb_recall(
+            engine,
+            query,
+            source_id=source,
+            symbol_kind=kind,
+            expand_hops=expand,
+            limit=limit,
+        )
+        if not result.matches:
+            console.print(f"[yellow]no matches for[/yellow] {query!r}")
+            return
+        table = Table(title=f"{len(result.matches)} match(es) for `{query}`")
+        table.add_column("kind", style="bold")
+        table.add_column("name")
+        table.add_column("language", style="dim")
+        table.add_column("location", style="dim")
+        for m in result.matches:
+            md = m.metadata
+            loc = f"{md.get('rel_path', '?')}:{md.get('start_line')}-{md.get('end_line')}"
+            table.add_row(md.get("symbol_kind", "?"), m.name, md.get("language", ""), loc)
+        console.print(table)
+        if result.neighborhood:
+            console.print(
+                f"\n[dim]neighborhood ({len(result.neighborhood)} nodes, "
+                f"{len(result.edges)} edges):[/dim]"
+            )
+            for n in result.neighborhood[:10]:
+                console.print(f"  [{n.kind.value}] {n.name}")
+        if result.related_concepts:
+            console.print(
+                f"\n[dim]related decisions/constraints ({len(result.related_concepts)}):[/dim]"
+            )
+            for c in result.related_concepts[:5]:
+                console.print(f"  [{c.kind.value}] {c.name}")
+    finally:
+        engine.close()
+
+
 if __name__ == "__main__":
     app()
