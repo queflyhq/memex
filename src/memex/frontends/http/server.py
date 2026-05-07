@@ -151,19 +151,32 @@ def _compute_stats(
     `window_hours` for "this session / today / this week" tabs.
     """
     base_engine_stats = engine.stats()
-    concepts = engine.semantic.all_concepts()
-    concepts_by_kind = Counter(c.kind.value for c in concepts)
-
-    # Edge counts via a sample fan-out — DuckDB has no `all_edges()`
-    # convenience but we can derive from edges_for over every node.
-    edges_seen: dict[tuple[str, str, str], None] = {}
-    for c in concepts:
-        for e in engine.edges_for(c.id):
-            edges_seen[(e.from_id, e.to_id, e.kind.value)] = None
-    edges_by_kind: Counter[str] = Counter()
-    for _, _, kind in edges_seen:
-        edges_by_kind[kind] += 1
-    edges_total = len(edges_seen)
+    # Use single-pass SQL aggregates — at ~8.8k concepts + ~19k edges,
+    # iterating per-concept like the original implementation made /stats
+    # take >10s. SQL aggregates land in <100ms.
+    conn = engine.semantic.conn
+    lock = engine.semantic._lock
+    with lock:
+        concepts_total = conn.execute(
+            "SELECT count(*) FROM concepts"
+        ).fetchone()[0]
+        concepts_by_kind = dict(conn.execute(
+            "SELECT kind, count(*) FROM concepts GROUP BY kind"
+        ).fetchall())
+        edges_total = conn.execute(
+            "SELECT count(*) FROM edges"
+        ).fetchone()[0]
+        edges_by_kind = dict(conn.execute(
+            "SELECT kind, count(*) FROM edges GROUP BY kind"
+        ).fetchall())
+        tasks_by_status_rows = conn.execute(
+            """
+            SELECT json_extract_string(metadata, '$.status') AS status,
+                   count(*) AS n
+            FROM concepts WHERE kind = 'task' GROUP BY status
+            """
+        ).fetchall()
+    tasks_by_status = {(s or "pending"): n for s, n in tasks_by_status_rows}
 
     # Episodic events. The store doesn't expose a "give me everything"
     # call, so use a generous limit for window-aware aggregation.
@@ -189,14 +202,6 @@ def _compute_stats(
         "afk_sessions": events_by_kind.get("afk_enabled", 0),
     }
 
-    # Task status breakdown (for the Tasks tile + page).
-    tasks_by_status: Counter[str] = Counter()
-    for c in concepts:
-        if c.kind != NodeKind.task:
-            continue
-        st = (c.metadata or {}).get("status", "pending")
-        tasks_by_status[st] += 1
-
     # Per-tool / per-actor breakdown for the Impact rollup.
     by_actor: dict[str, dict[str, int]] = {}
     for ev in events_window:
@@ -216,17 +221,26 @@ def _compute_stats(
         for ev in events_window[:30]
     ]
 
+    # Distinguish "events in the active window" from "events in DB total"
+    # so the Dashboard can show "200 events this week of 28k total" when
+    # window_hours is set, rather than misreporting either.
+    events_in_db = engine.episodic.count()
     return {
         **base_engine_stats,
-        "concepts_total": len(concepts),
-        "concepts_by_kind": dict(concepts_by_kind),
+        "concepts_total": concepts_total,
+        "concepts_by_kind": concepts_by_kind,
         "edges_total": edges_total,
-        "edges_by_kind": dict(edges_by_kind),
-        "events_total": len(events_window),
+        "edges_by_kind": edges_by_kind,
+        "events_total": events_in_db,
+        "events_in_window": len(events_window),
         "events_by_kind": dict(events_by_kind),
         "events_by_actor": dict(events_by_actor),
+        # Aliases — keep compatibility with desktop tabs that read either
+        # the engine-stats shape or the rich-stats shape.
+        "vectors_total": base_engine_stats.get("vectors"),
+        "vector_dim": getattr(engine.vector, "dim", 384),
         "by_actor": by_actor,
-        "tasks_by_status": dict(tasks_by_status),
+        "tasks_by_status": tasks_by_status,
         "impact": impact_tiles,
         "recent_events": recent_strip,
         "window_hours": window_hours,
