@@ -398,6 +398,94 @@ def test_find_orphans_surfaces_uncalled_symbols(engine: Engine, tmp_path: Path):
     assert "_private" in {o.name for o in with_private}
 
 
+# ---- cross-repo linker ------------------------------------------------------
+
+
+def test_link_cross_repo_creates_same_as_for_matching_symbols(
+    engine: Engine, tmp_path: Path
+):
+    """Two sources defining `JWTClaims` with similar signatures should
+    get a `same_as` edge between them after the linker runs."""
+    from memex.codebase import link_cross_repo
+
+    repo_a = tmp_path / "auth-service"
+    repo_b = tmp_path / "admin-service"
+    repo_a.mkdir(); repo_b.mkdir()
+    (repo_a / "jwt.py").write_text(
+        textwrap.dedent("""
+            class JWTClaims:
+                def verify(self, token: str) -> bool:
+                    return True
+        """).strip(),
+        encoding="utf-8",
+    )
+    (repo_b / "auth.py").write_text(
+        textwrap.dedent("""
+            class JWTClaims:
+                def verify(self, token: str) -> bool:
+                    return True
+        """).strip(),
+        encoding="utf-8",
+    )
+    src_a = add_source(engine, repo_a, name="auth-service")
+    src_b = add_source(engine, repo_b, name="admin-service")
+    index_source(engine, src_a.id)
+    index_source(engine, src_b.id)
+
+    result = link_cross_repo(engine)
+    # JWTClaims (class) and verify (method) both qualify since their
+    # names are >= 4 chars and not in the generic-noise list.
+    assert any(p.a_name == "JWTClaims" for p in result.pairs)
+    # The same_as edge exists in the graph.
+    a_class = next(c for c in engine.find_by_kind(NodeKind.symbol)
+                   if c.name == "JWTClaims" and c.metadata["source_id"] == src_a.id)
+    same_edges = [e for e in engine.edges_for(a_class.id) if e.kind == EdgeKind.same_as]
+    assert len(same_edges) >= 1
+
+
+def test_link_cross_repo_skips_generic_names(engine: Engine, tmp_path: Path):
+    """Names like `parse` shouldn't auto-link across services."""
+    from memex.codebase import link_cross_repo
+
+    repo_a = tmp_path / "svc-a"; repo_b = tmp_path / "svc-b"
+    repo_a.mkdir(); repo_b.mkdir()
+    (repo_a / "x.py").write_text("def parse(s): return s\n", encoding="utf-8")
+    (repo_b / "x.py").write_text("def parse(s): return s\n", encoding="utf-8")
+    src_a = add_source(engine, repo_a, name="svc-a")
+    src_b = add_source(engine, repo_b, name="svc-b")
+    index_source(engine, src_a.id)
+    index_source(engine, src_b.id)
+
+    result = link_cross_repo(engine)
+    assert all(p.a_name != "parse" for p in result.pairs)
+    assert result.skipped_generic >= 2
+
+
+def test_link_cross_repo_dry_run_writes_no_edges(engine: Engine, tmp_path: Path):
+    from memex.codebase import link_cross_repo
+
+    repo_a = tmp_path / "a"; repo_b = tmp_path / "b"
+    repo_a.mkdir(); repo_b.mkdir()
+    (repo_a / "core.py").write_text(
+        "class TenantConfig:\n    def hydrate(self, slug): pass\n", encoding="utf-8"
+    )
+    (repo_b / "core.py").write_text(
+        "class TenantConfig:\n    def hydrate(self, slug): pass\n", encoding="utf-8"
+    )
+    src_a = add_source(engine, repo_a)
+    src_b = add_source(engine, repo_b)
+    index_source(engine, src_a.id)
+    index_source(engine, src_b.id)
+
+    result = link_cross_repo(engine, dry_run=True)
+    assert len(result.pairs) >= 1
+    # No same_as edges actually written.
+    a_cls = next(c for c in engine.find_by_kind(NodeKind.symbol)
+                 if c.name == "TenantConfig" and c.metadata["source_id"] == src_a.id)
+    same_edges = [e for e in engine.edges_for(a_cls.id) if e.kind == EdgeKind.same_as]
+    assert same_edges == []
+
+
 def test_unresolved_calls_dont_pollute_graph(engine: Engine, tmp_path: Path):
     """Calls to external/builtin names (e.g. `print`, `len`) shouldn't
     create dangling edges — they're left for cross-repo linker pass."""

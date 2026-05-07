@@ -16,6 +16,7 @@ in the memex graph for the design rationale.
 
 from memex.codebase.detect import detect_language, supported_languages
 from memex.codebase.indexer import index_source, reindex_source
+from memex.codebase.linker import link_cross_repo
 from memex.codebase.recall import find_orphans, recall_code
 from memex.codebase.sources import (
     add_source,
@@ -30,6 +31,7 @@ __all__ = [
     "find_orphans",
     "get_source",
     "index_source",
+    "link_cross_repo",
     "list_sources",
     "recall_code",
     "reindex_source",
