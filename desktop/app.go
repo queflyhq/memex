@@ -112,6 +112,7 @@ func (a *App) spawnDaemon() error {
 			continue
 		}
 		cmd := exec.Command(path, "daemon")
+		hideConsole(cmd)
 		_ = cmd.Start()
 		return nil
 	}

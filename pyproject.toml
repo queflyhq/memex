@@ -1,6 +1,6 @@
 [project]
 name = "memex"
-version = "0.6.0.dev0"
+version = "1.0.0"
 description = "Centralized agentic memory for any LLM/agent. MCP gateway + persistent graph + skill validation. Local-first, ships with a curated catalog of upstream MCP servers."
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -19,7 +19,7 @@ keywords = [
     "cline",
 ]
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 5 - Production/Stable",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",

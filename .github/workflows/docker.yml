@@ -8,6 +8,8 @@ on:
 
 permissions:
   contents: read
+  packages: write
+  id-token: write   # for cosign keyless signing
 
 env:
   IMAGE: quefly/memex
@@ -58,6 +60,7 @@ jobs:
 
       - name: Build and push
         if: steps.check_creds.outputs.creds_present == 'true'
+        id: build
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -67,3 +70,47 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          provenance: true
+          sbom: true
+
+      - name: Install cosign
+        if: steps.check_creds.outputs.creds_present == 'true'
+        uses: sigstore/cosign-installer@v3
+        with:
+          cosign-release: v2.4.1
+
+      - name: Sign image (keyless via OIDC)
+        if: steps.check_creds.outputs.creds_present == 'true'
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+          TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          # Sign every tag we just pushed at the immutable digest. Keyless mode
+          # — identity is the GitHub Actions OIDC token; no private keys.
+          for tag in ${TAGS}; do
+            cosign sign --yes "${tag}@${DIGEST}"
+          done
+
+      - name: Install syft (SBOM generator)
+        if: steps.check_creds.outputs.creds_present == 'true'
+        uses: anchore/sbom-action/download-syft@v0.17.8
+
+      - name: Generate + attest SBOM (CycloneDX)
+        if: steps.check_creds.outputs.creds_present == 'true'
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+          IMAGE_REF: ${{ env.IMAGE }}
+        run: |
+          # Generate a CycloneDX SBOM for the multi-arch image and attach it
+          # as a cosign attestation at the digest.
+          syft "${IMAGE_REF}@${DIGEST}" -o cyclonedx-json=sbom.cdx.json
+          cosign attest --yes \
+            --predicate sbom.cdx.json \
+            --type cyclonedx \
+            "${IMAGE_REF}@${DIGEST}"
+
+      - uses: actions/upload-artifact@v4
+        if: steps.check_creds.outputs.creds_present == 'true'
+        with:
+          name: sbom-cyclonedx
+          path: sbom.cdx.json

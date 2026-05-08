@@ -75,12 +75,11 @@ That's it. Claude Code can now `recall`, `validate`, `observe`, and `add` agains
 
 | Editor | One-line setup |
 |---|---|
-| Claude Code | `claude mcp add memex memex serve` |
-| Cursor | [docs/editors/cursor.md](docs/editors/cursor.md) |
-| Windsurf | [docs/editors/windsurf.md](docs/editors/windsurf.md) |
-| Cline (VS Code) | [docs/editors/cline.md](docs/editors/cline.md) |
-| Any HTTP-capable client | [docs/editors/http.md](docs/editors/http.md) |
-| Docker daemon | [docs/editors/docker.md](docs/editors/docker.md) |
+| Claude Code | `claude mcp add memex memex serve` — see [Claude Code recipe](https://quefly.com/docs/memex/editors/claude-code) |
+| Cursor / Windsurf / Cline | Drop the snippet below into the editor's MCP config |
+| Any HTTP-capable client | [HTTP recipe](https://quefly.com/docs/memex/editors/http) |
+| Docker daemon | [Docker recipe](https://quefly.com/docs/memex/editors/docker) |
+| HTTP API reference | [API docs](https://quefly.com/docs/memex/api) |
 
 ## MCP gateway (v0.6)
 
@@ -187,10 +186,11 @@ See [docs/concepts.md](docs/concepts.md) for the full RAM-hardware ↔ human-mem
 | **v0.3** | Passive distillation + intent tracking | Sessions become semantic memory automatically (episodic → semantic consolidation); memex remembers user instructions + AI outcomes + flags when AI deviates from instructed approach |
 | **v0.4** | Self-curation | Background consolidation, decay, dedup, contradiction detection |
 | **v0.5** | Code-verified confidence | Memory grounded in actual code state — falsifiability checked by background pass |
-| **v0.6** | **MCP gateway + agentic-memory positioning** | memex now re-exports upstream MCP servers as tools, auto-`observe()`s every call. Curated catalog (`memex upstream install …`). Loud failure on degraded recall (no silent BM25 fallback). Honest `memex doctor` diagnosis. Schema gains `degraded` field on `RecallResult`. Foundation for consolidation. |
-| **v0.7** | Consolidation + perception | Episodic→semantic promotion (`memex consolidate`); active pruning of stale nodes; multi-cue retrieval (project / time / file / error); per-tool MCP registration replaces the dispatch meta-tool. |
-| **v0.8** | Team mode + AuthFI | `memex daemon` deployed on a team server; AuthFI handles SSO + member identity; every node carries `actor=<authfi_user_id>`; AI knows who decided what, when, why. Daemon-as-arbiter resolves single-writer Kuzu lock. |
-| **v1.0** | Counterfactual reasoning | Memory that simulates consequences of edits before they happen |
+| **v1.0** | **GA** | All foundations + skills + MCP gateway + curated upstream catalog. PyPI + Docker Hub releases. Per-machine auth token bootstrapping. cosign-signed images. MIT, local-first, zero telemetry. |
+| **v1.1** | Consolidation + perception | Episodic→semantic promotion (`memex consolidate`); active pruning of stale nodes; multi-cue retrieval (project / time / file / error); per-tool MCP registration replaces the dispatch meta-tool. |
+| **v1.2** | Self-curation | Background consolidation, decay, dedup, contradiction detection. |
+| **v1.3** | Code-verified confidence | Memory grounded in actual code state — falsifiability checked by background pass. |
+| **v2.0** | Team mode + AuthFI | `memex daemon` deployed on a team server; AuthFI handles SSO + member identity; every node carries `actor=<authfi_user_id>`. Daemon-as-arbiter resolves single-writer DuckDB lock. |
 
 ## Team mode (v0.6)
 
@@ -204,7 +204,10 @@ Auth is handled via [AuthFI](https://authfi.app) — every memex deployment gets
 
 ## Status
 
-**v0.1 — alpha.** APIs may change. Use it, file issues, send PRs.
+**v1.0 — generally available.** MIT licensed, no telemetry, runs entirely on your machine. APIs are stable under semantic versioning. Use it, file issues, send PRs.
+
+📖 **Full documentation:** [quefly.com/docs/memex](https://quefly.com/docs/memex)
+⬇️ **Downloads:** [quefly.com/open-source/memex/download](https://quefly.com/open-source/memex/download)
 
 ## License
 
@@ -212,7 +215,7 @@ MIT — see [LICENSE](LICENSE).
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md). Issues and PRs welcome.
+See [CONTRIBUTING.md](CONTRIBUTING.md). Issues and PRs welcome. Please follow the [Code of Conduct](CODE_OF_CONDUCT.md). For privacy, see [PRIVACY.md](PRIVACY.md). For security, see [SECURITY.md](SECURITY.md).
 
 ---
 

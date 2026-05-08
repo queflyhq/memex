@@ -1283,7 +1283,31 @@ def run_http(
     auth_token: str | None = None,
     engine: Engine | None = None,
 ) -> None:
-    """Convenience entry: build engine if not provided, then serve."""
+    """Convenience entry: build engine if not provided, then serve.
+
+    On startup we resolve the effective auth token via runtime_state:
+
+    - explicit ``auth_token`` arg wins (CLI ``--auth-token``)
+    - else honor ``MEMEX_AUTH_TOKEN`` from settings
+    - else read or mint ``<data_dir>/daemon.token`` (mode 0600)
+
+    The resolved token is also mirrored to the data dir so the desktop
+    app and other local clients can discover it without an env var.
+    The listening URL is published to ``<data_dir>/daemon.url`` for
+    the same reason. See PRIVACY.md and SECURITY.md for the trust model.
+    """
+    from memex.config import get_settings
+    from memex.runtime_state import bootstrap_auth_token, write_daemon_url
+
     engine = engine or Engine.build_default()
-    frontend = HTTPFrontend(engine=engine, host=host, port=port, auth_token=auth_token)
+
+    settings = get_settings()
+    if auth_token is not None:
+        # Mirror explicit override into settings so bootstrap persists it.
+        settings.auth_token = auth_token
+    resolved_token = bootstrap_auth_token(settings)
+    public_host = "127.0.0.1" if host == "0.0.0.0" else host
+    write_daemon_url(settings, f"http://{public_host}:{port}")
+
+    frontend = HTTPFrontend(engine=engine, host=host, port=port, auth_token=resolved_token)
     frontend.run()

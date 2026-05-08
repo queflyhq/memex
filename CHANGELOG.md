@@ -2,7 +2,37 @@
 
 All notable changes to memex are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.6.0.dev0] — unreleased
+## [1.0.0] — 2026-05-08
+
+**memex is generally available.** MIT licensed, local-first, zero telemetry. The pre-1.0 development line consolidates into this stable cut. All public APIs (CLI, HTTP, MCP) follow semantic versioning from here on.
+
+### Added
+
+- **Per-machine auth token bootstrap** (`src/memex/runtime_state.py`). On first daemon start memex generates a secure random token at `<data_dir>/daemon.token` (mode `0o600` on POSIX), reads it on subsequent runs, and exposes a discovery file `<data_dir>/daemon.url`. The Wails desktop app and CLI clients pick these up automatically — no env var required for local use. See [SECURITY.md](SECURITY.md) for the trust model.
+- **Cross-platform Wails desktop builds** (`.github/workflows/desktop.yml`) — Windows / macOS-universal / Linux artifacts on every tag, attached to the GitHub release. Unsigned in v1.0; code signing tracked separately.
+- **PyPI trusted-publishing workflow** (`.github/workflows/pypi.yml`) — wheel + sdist on every `v*.*.*` tag via OIDC, no API tokens stored in the repo.
+- **Cosign-signed Docker images + CycloneDX SBOM attestations** (`.github/workflows/docker.yml`). Verify with `cosign verify quefly/memex:1.0.0 --certificate-identity-regexp "https://github.com/queflyhq/memex/.+" --certificate-oidc-issuer https://token.actions.githubusercontent.com`.
+- **Coverage gate in CI** — `pytest --cov-fail-under=70` on every push.
+- **Issue + PR templates** (`.github/ISSUE_TEMPLATE/{bug,feature,config}.yml`, `.github/PULL_REQUEST_TEMPLATE.md`).
+- **`SECURITY.md`** — vulnerability reporting policy + response timeline + threat model.
+- **`PRIVACY.md`** — explicit "no telemetry" statement, data-dir layout, opt-in topology for the future team mode.
+- **`CODE_OF_CONDUCT.md`** — adopts Contributor Covenant 2.1 by reference; reports go to `conduct@quefly.com`.
+- **`.pre-commit-config.yaml`** — ruff lint + format + standard hygiene hooks.
+- **Documentation site at [quefly.com/docs/memex](https://quefly.com/docs/memex)** — quickstart, concepts, skills, editor recipes, and a full HTTP API reference.
+
+### Changed
+
+- Version bumped from `0.6.0.dev0` to `1.0.0`. PyPI classifier updated to `Development Status :: 5 - Production/Stable`.
+- Roadmap repositioned around v1.0 GA: consolidation (v1.1), self-curation (v1.2), code-verified confidence (v1.3), team mode + AuthFI (v2.0).
+- Desktop app's `spawnDaemon` no longer flashes a Windows console window — `SysProcAttr{HideWindow: true, CreationFlags: CREATE_NO_WINDOW}` set on the child process.
+
+### Migration notes
+
+- `0.x` users upgrade in place. No data migration required.
+- The first daemon start after upgrading mints `<data_dir>/daemon.token` if `MEMEX_AUTH_TOKEN` is unset. Existing scripts that hit the daemon over HTTP without a token continue to work for now (the daemon honors the token only when it has one), but should switch to reading the file or setting `MEMEX_AUTH_TOKEN` for forward compatibility.
+- `mkdocs` site at `docs/` is superseded by [quefly.com/docs/memex](https://quefly.com/docs/memex). The `docs/` directory in the repo remains as the source-of-truth markdown until v1.1.
+
+## [0.6.0.dev0] — superseded by 1.0.0
 
 This release reframes memex from "Claude Code memory" to **centralized agentic memory** — the single store any LLM agent (Claude Code, Cursor, Windsurf, Cline, custom Python/TS agents, autonomous loops) connects to. The headline addition is the **MCP gateway**: memex now re-exports tools from upstream MCP servers the user owns, and automatically captures every proxied call as an episodic event. That auto-capture is the perception primitive future consolidation passes (v0.7) will turn into semantic facts.
 
