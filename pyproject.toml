@@ -1,6 +1,6 @@
 [project]
 name = "memex"
-version = "1.0.1"
+version = "1.0.2"
 description = "Centralized agentic memory for any LLM/agent. MCP gateway + persistent graph + skill validation. Local-first, ships with a curated catalog of upstream MCP servers."
 readme = "README.md"
 license = { file = "LICENSE" }
