@@ -104,11 +104,12 @@ def recall(
     budget: Annotated[int, typer.Option("--budget", "-b", help="Token budget.")] = 2000,
     kind: Annotated[NodeKind | None, typer.Option("--kind", "-k", case_sensitive=False)] = None,
     expand: Annotated[int, typer.Option("--expand", "-e", help="Graph expand hops.")] = 1,
+    rerank: Annotated[bool, typer.Option("--rerank", help="Run cross-encoder rerank for higher precision (adds ~5-8s on CPU). Off by default.")] = False,
     json_out: Annotated[bool, typer.Option("--json", help="Emit JSON instead of a table.")] = False,
 ) -> None:
     """Retrieve a budget-bounded subgraph that matches the query."""
     eng = _engine()
-    result = eng.recall(query=query, budget_tokens=budget, kind=kind, expand_hops=expand)
+    result = eng.recall(query=query, budget_tokens=budget, kind=kind, expand_hops=expand, rerank=rerank)
 
     if json_out:
         import json as _json
@@ -212,12 +213,19 @@ def progress(
 
 @app.command(name="install")
 def install_target(
-    target: Annotated[str, typer.Argument(help="skill:NAME or model:embed")],
+    target: Annotated[str, typer.Argument(help="skill:NAME, rules:NAME, or model:embed (e.g. skill:using-memex, rules:safety-baseline, model:embed)")],
 ) -> None:
-    """Install a skill bundle or an ML tier."""
+    """Install a skill bundle, a rules pack, or an ML tier.
+
+    Examples:
+      memex install skill:using-memex
+      memex install skill:core-validations
+      memex install rules:safety-baseline   # 15 production-grade safety rules
+      memex install model:embed             # show install hint for embed tier
+    """
     if ":" not in target:
         err_console.print(
-            "[red]invalid target[/red] — expected `skill:NAME` or `model:embed`"
+            "[red]invalid target[/red] — expected `skill:NAME`, `rules:NAME`, or `model:embed`"
         )
         raise typer.Exit(code=2)
 
