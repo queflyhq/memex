@@ -21,7 +21,7 @@ keywords = [
 classifiers = [
     "Development Status :: 5 - Production/Stable",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
+    "License :: OSI Approved :: Apache Software License",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
@@ -36,6 +36,7 @@ dependencies = [
     "fastapi>=0.110",
     "uvicorn[standard]>=0.27",
     "httpx>=0.26",
+    "jinja2>=3.1",
     "pydantic>=2.6",
     "pydantic-settings>=2.2",
     "typer>=0.12",
@@ -44,6 +45,12 @@ dependencies = [
     "rank-bm25>=0.2.2",
     "numpy>=1.26",
     "fastembed>=0.3",
+    # ONNX runtime pinned to the last version that works with fastembed's
+    # bge-small model. 1.20+ broke the SkipLayerNormalization op; until
+    # fastembed releases a compatible build, we hold at 1.19.2. The
+    # Windows wheels of this version need VC++ Redistributable installed
+    # at the OS level — INSTALL.md covers it.
+    "onnxruntime==1.19.2",
     # Codebase memory — typed-graph chunking via tree-sitter. The baseline
     # set covers AuthFI's full stack (Python, Go, JS/TS, Java for services;
     # Svelte/HCL/YAML/Bash for UI + infra) so memex works out of the box on
@@ -66,10 +73,24 @@ dependencies = [
     # System self-reporting (RAM/CPU/process info) for the desktop's
     # daemon-status footer. Cross-platform; lightweight.
     "psutil>=5.9",
+    # DuckDB INTERVAL operations (e.g. `INTERVAL 24 HOUR` in our Home page
+    # queries) need pytz at runtime. Without it, INTERVAL-using queries
+    # crash with "Required module 'pytz' failed to import". Pin loose so
+    # we don't fight any downstream tool.
+    "pytz>=2024.1",
 ]
 
 [project.optional-dependencies]
 embed = ["fastembed>=0.3"]
+# Fine-tuning extras — kept out of the default install (~3 GB) so the
+# daemon stays light. Run scripts/train_lora.py with this extra to
+# retrain memex on its own captured (query, useful-result) pairs.
+finetune = [
+    "sentence-transformers>=3.0",
+    "torch>=2.0",
+    "optimum[onnxruntime]>=1.22",
+    "onnx>=1.17",
+]
 # Additional code chunkers — opt-in for stacks beyond the baseline five.
 code-rust = ["tree-sitter-rust>=0.23"]
 code-cpp = ["tree-sitter-cpp>=0.23"]
@@ -109,6 +130,17 @@ include = [
     "src/memex/**/*.json",
     "src/memex/**/*.jsonl",
     "src/memex/**/*.svg",
+    # Web UI bundle — Jinja2 templates + CSS + vendored htmx/prism + editor logos.
+    # Without these, the daemon ships but UI pages 404. They live under
+    # src/memex/frontends/http/{templates,static}.
+    "src/memex/**/*.html",
+    "src/memex/**/*.css",
+    "src/memex/**/*.js",
+    "src/memex/**/*.png",
+    # Skills + skill bundle metadata
+    "src/memex/**/*.yaml",
+    "src/memex/**/*.yml",
+    "src/memex/**/*.md",
 ]
 
 [tool.hatch.build.targets.sdist]

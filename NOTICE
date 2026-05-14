@@ -1,0 +1,23 @@
+memex — Reference implementation of the Open Memory Protocol (OMP)
+Copyright 2026 Quefly Enterprises LLP (LLPIN ACX-1059)
+
+This product is licensed under the Apache License, Version 2.0 (the "License");
+you may not use this product except in compliance with the License. You may
+obtain a copy of the License in the LICENSE file at the root of this
+distribution or at:
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+The Open Memory Protocol specification at docs/omp-spec.md is separately
+licensed under Creative Commons Attribution 4.0 International (CC BY 4.0):
+
+    https://creativecommons.org/licenses/by/4.0/
+
+Attribution: when reproducing or building on the OMP specification, credit
+Quefly Enterprises LLP (LLPIN ACX-1059) and preserve the CC BY 4.0 notice.
+
+---
+
+Third-party components bundled or required at runtime carry their own
+licenses; see the dependency manifest in pyproject.toml + any LICENSE files
+distributed with installed dependencies.

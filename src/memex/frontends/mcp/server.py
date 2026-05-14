@@ -50,6 +50,110 @@ Backend = Union[Engine, "MemexClient"]
 log = logging.getLogger(__name__)
 
 
+def _auto_promote_upstream_result(
+    engine: Any,
+    upstream: str,
+    tool: str,
+    args: dict[str, Any],
+    result: Any,
+) -> None:
+    """Save a successful upstream MCP tool result as a kind=fact node.
+
+    Idempotent on (name, kind, source) — the same upstream call with the
+    same args refreshes the same node instead of duplicating. Lets later
+    recall queries ("what's in the GitHub issue we just opened?") hit a
+    typed concept, not a raw event payload.
+
+    Skip conditions:
+      - $MEMEX_NO_AUTO_PROMOTE truthy (global opt-out)
+      - Result is a non-text payload too large or too opaque to be useful
+        as a node body (binary, deep nested, > 8 KB serialized)
+    """
+    import hashlib as _hash
+    import json as _json
+    import os as _os
+    from memex.core.schema import Source
+
+    if (_os.environ.get("MEMEX_NO_AUTO_PROMOTE") or "").lower() in {"1", "true", "yes"}:
+        return
+
+    # Extract a useful text body — most MCP tools return either
+    # {"content": [{"type": "text", "text": "..."}]} or a JSON-y dict.
+    body_text: str
+    if isinstance(result, dict) and isinstance(result.get("content"), list):
+        parts: list[str] = []
+        for c in result["content"]:
+            if isinstance(c, dict) and c.get("type") == "text":
+                parts.append(str(c.get("text") or ""))
+        body_text = "\n\n".join(p for p in parts if p)
+    elif isinstance(result, str):
+        body_text = result
+    else:
+        try:
+            body_text = _json.dumps(result, ensure_ascii=False, default=str)
+        except Exception:  # noqa: BLE001
+            return
+    if not body_text.strip():
+        return
+    if len(body_text) > 8192:
+        body_text = body_text[:8192] + "…(truncated)"
+
+    # Build a stable name so the same call upserts the same node.
+    arg_hash = _hash.sha1(
+        _json.dumps(args, sort_keys=True, default=str).encode("utf-8")
+    ).hexdigest()[:8]
+    name = f"{upstream}.{tool}#{arg_hash}"
+
+    md = {
+        "from_upstream": upstream,
+        "from_tool": tool,
+        "args": args,
+        "auto_promoted": True,
+    }
+    engine.observe(
+        kind="upstream_result_promoted",
+        actor=Source.agent,
+        payload={"name": name, "len": len(body_text)},
+    )
+    # Use the engine.add() path — it's not idempotent by itself, but the
+    # repeated-name will produce a no-op merge in the DuckDB store's
+    # add_concept (UPSERT keyed by id; since the id is generated here we
+    # need find_by_name_kind_source first to detect existing).
+    existing = engine.find_by_name_kind_source(
+        name=name, kind="fact", source=Source.agent,
+    )
+    if existing is not None:
+        # Refresh: update description + last_confirmed_at via the same
+        # mechanism /remember uses (in-place update preserving id).
+        from datetime import datetime as _dt, timezone as _tz
+        from memex.core.schema import Concept as _Concept
+        new_md = dict(existing.metadata or {})
+        new_md.update(md)
+        engine.semantic.add_concept(
+            _Concept(
+                id=existing.id,
+                name=existing.name,
+                description=body_text,
+                kind=existing.kind,
+                source=existing.source,
+                confidence=existing.confidence,
+                created_at=existing.created_at,
+                last_confirmed_at=_dt.now(_tz.utc),
+                metadata=new_md,
+                verification=existing.verification,
+            )
+        )
+        return
+    engine.add(
+        name=name,
+        description=body_text,
+        kind="fact",
+        source=Source.agent,
+        confidence=0.7,
+        metadata=md,
+    )
+
+
 def _brand_icon() -> Any:
     """Build the MCP `Icon` for the memex server.
 
@@ -1844,6 +1948,22 @@ class MCPServer:
                         "error": error,
                     },
                 )
+                # Auto-promote: when a successful upstream tool returns
+                # textual content small enough to be useful, save it as a
+                # kind=fact node (idempotent on a stable name derived from
+                # the upstream + tool + args hash). This is what makes
+                # "what did github tell us about this issue" answerable
+                # via recall later, not just via the raw episodic stream.
+                # Opt-out per upstream via metadata.no_auto_promote in the
+                # upstream config (future), or globally via
+                # MEMEX_NO_AUTO_PROMOTE=1.
+                if ok:
+                    try:
+                        _auto_promote_upstream_result(
+                            engine, upstream, tool, args, result_payload,
+                        )
+                    except Exception as e:  # noqa: BLE001
+                        log.debug("auto-promote skipped: %s", e)
                 if not ok:
                     return {"ok": False, "error": error}
                 return {"ok": True, "result": result_payload}
@@ -2004,5 +2124,12 @@ def run_stdio_via_daemon(auto_spawn: bool = True) -> None:
             f"memex daemon not reachable at {url}. "
             f"{'Check MEMEX_DAEMON_URL / MEMEX_AUTH_TOKEN.' if settings.daemon_url else 'Start it with: memex daemon'}"
         )
-    client = MemexClient(base_url=url, auth_token=settings.auth_token)
+    # Auth token resolution: env var first (MEMEX_AUTH_TOKEN via pydantic
+    # Settings), then fall back to <data_dir>/daemon.token written by the
+    # daemon on first run. Without the disk fallback every MCP write
+    # 401s when the client was spawned without the env var (e.g. by
+    # Claude Code or the Wails desktop). See runtime_state.read_auth_token.
+    from memex.runtime_state import read_auth_token
+    auth_token = settings.auth_token or read_auth_token(settings)
+    client = MemexClient(base_url=url, auth_token=auth_token)
     MCPServer(client).serve_stdio()

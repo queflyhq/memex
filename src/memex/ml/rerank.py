@@ -53,9 +53,14 @@ class FastEmbedReranker:
         self._load_lock = threading.Lock()
 
     def is_available(self) -> bool:
+        # Broad except — fastembed can fail to import for reasons other than
+        # ImportError (onnxruntime version mismatches throw at class-def
+        # time). Any import-time failure means "not available"; daemon
+        # falls back to NoOpReranker.
         try:
             from fastembed.rerank.cross_encoder import TextCrossEncoder  # noqa: F401
-        except ImportError:
+        except Exception as e:  # noqa: BLE001
+            log.info("fastembed not usable for rerank: %s", e)
             return False
         return True
 
@@ -67,8 +72,10 @@ class FastEmbedReranker:
                 return self._model
             try:
                 from fastembed.rerank.cross_encoder import TextCrossEncoder
-            except ImportError as e:
-                raise RerankUnavailableError("fastembed not installed") from e
+            except Exception as e:  # noqa: BLE001
+                raise RerankUnavailableError(
+                    f"fastembed not usable: {e}"
+                ) from e
             log.info("loading reranker model: %s", self.model_name)
             self._model = TextCrossEncoder(model_name=self.model_name)
             return self._model
@@ -85,7 +92,24 @@ class FastEmbedReranker:
 
 
 def build_default_reranker(model_name: str = "Xenova/ms-marco-MiniLM-L-6-v2"):
-    """Return FastEmbed if installed, NoOp otherwise — never raises."""
+    """Return FastEmbed if installed, NoOp otherwise — never raises.
+
+    Honors <data_dir>/active_reranker.txt — when present and non-empty,
+    its contents override `model_name`. This is how `memex train-reranker
+    --apply` flips the live model without code changes. Restart the
+    daemon to pick up a new active reranker.
+    """
+    try:
+        from memex.config import get_settings
+        from pathlib import Path as _Path
+        active = _Path(str(get_settings().data_dir)) / "active_reranker.txt"
+        if active.is_file():
+            override = active.read_text(encoding="utf-8").strip()
+            if override:
+                log.info("reranker override active: %s", override)
+                model_name = override
+    except Exception:  # noqa: BLE001
+        pass  # defensive — never break daemon startup over a config file
     fe = FastEmbedReranker(model_name=model_name)
     if fe.is_available():
         return fe

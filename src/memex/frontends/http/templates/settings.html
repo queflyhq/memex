@@ -1,0 +1,247 @@
+{% extends "base.html" %}
+{% block title %}Settings{% endblock %}
+{% block content %}
+<h1>Settings</h1>
+<p class="lede">Everything operational. Click a section to expand.</p>
+
+{# ---------- 1. Service (always-on) ---------- #}
+<details class="accord" id="service" {% if open_section == 'service' %}open{% endif %}>
+  <summary>
+    <span class="caret">▸</span>
+    <span class="lbl">Service</span>
+    <span class="hint">{{ 'always-on' if service.running else 'manual start' }} on {{ service.platform }}</span>
+  </summary>
+  <div class="body">
+    <p class="lede" style="margin-top:0;">Memex needs to be running for AI editors to recall, remember, observe, and validate. Install as a user-scope service so it starts on login.</p>
+
+    <div style="display:grid; grid-template-columns:1fr 1fr; gap:14px;">
+      <div>
+        <h3 style="font-size:12.5px; margin:0 0 4px;">Status</h3>
+        <p style="font-size:12.5px; margin:0;">
+          <span class="check-status check-{{ 'ok' if service.installed else 'warn' }}">{{ 'installed' if service.installed else 'not installed' }}</span>
+          ·
+          <span class="check-status check-{{ 'ok' if service.running else 'warn' }}">{{ 'running' if service.running else 'stopped' }}</span>
+        </p>
+        {% if service.platform == 'Windows' %}<p class="r-meta">Task Scheduler: <code>MemexDaemon</code></p>{% endif %}
+        {% if service.platform == 'macOS' %}<p class="r-meta">launchd: <code>com.quefly.memex</code></p>{% endif %}
+        {% if service.platform == 'Linux' %}<p class="r-meta">systemd-user: <code>memex.service</code></p>{% endif %}
+      </div>
+      <div style="display:flex; gap:8px; align-items:flex-end;">
+        {% if not service.installed %}
+          <form method="post" action="/app/settings/service/install" style="margin:0;">
+            <button class="btn-primary" type="submit">Install always-on</button>
+          </form>
+        {% else %}
+          <form method="post" action="/app/settings/service/uninstall" style="margin:0;" onsubmit="return confirm('Uninstall the auto-start service? Memex daemon will need to be started manually.');">
+            <button class="btn-secondary" type="submit">Uninstall</button>
+          </form>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+</details>
+
+{# ---------- 2. Team mode (git-sync) ---------- #}
+<details class="accord" id="team" {% if open_section == 'team' %}open{% endif %}>
+  <summary>
+    <span class="caret">▸</span>
+    <span class="lbl">Team mode</span>
+    <span class="hint">{{ 'connected: ' + team.repo if team.configured else 'solo' }}</span>
+  </summary>
+  <div class="body">
+    <p class="lede" style="margin-top:0;">Sync durable knowledge (decisions / facts / constraints / projects) with teammates through a shared git repo. Each teammate keeps a local daemon; the repo is the rendezvous.</p>
+
+    {% if not team.configured %}
+      <div style="background:var(--surface-2); padding:14px; border-radius:var(--radius); border:1px solid var(--border);">
+        <h3 style="font-size:12.5px; margin:0 0 8px;">Connect a team repo</h3>
+        <p style="font-size:12px; color:var(--muted); margin:0 0 10px;">Provide a path to a local clone of your team's memex git repo. If it doesn't exist yet, memex will <code>git init</code> it for you. Add a remote afterward via <code>git -C &lt;path&gt; remote add origin &lt;url&gt;</code>.</p>
+        <form method="post" action="/app/settings/team/init" style="display:flex; gap:8px; align-items:center;">
+          <input name="path" placeholder="C:\code\team-memex" required style="flex:1; padding:8px 12px; border:1px solid var(--border-2); border-radius:var(--radius); font-family:inherit; font-size:13px;">
+          <button class="btn-primary" type="submit">Initialize</button>
+        </form>
+      </div>
+    {% else %}
+      <div style="display:grid; grid-template-columns:1fr max-content; gap:14px; align-items:center;">
+        <div>
+          <p style="font-size:12.5px; margin:0;"><strong>Repo:</strong> <code>{{ team.repo }}</code></p>
+          {% if team.last_sync %}<p class="r-meta">Last sync {{ team.last_sync }}</p>{% endif %}
+          {% if team.concept_count %}<p class="r-meta">{{ team.concept_count }} concepts · {{ team.edge_count or 0 }} edges in the team graph</p>{% endif %}
+        </div>
+        <div style="display:flex; gap:6px;">
+          <form method="post" action="/app/settings/team/pull" style="margin:0;">
+            <button type="submit" class="btn-secondary">↓ Pull</button>
+          </form>
+          <form method="post" action="/app/settings/team/push" style="margin:0;">
+            <button type="submit" class="btn-secondary">↑ Push</button>
+          </form>
+        </div>
+      </div>
+      <p class="r-meta" style="margin-top:8px;">The scheduler auto-syncs every 10 minutes. Manual buttons here trigger an immediate run.</p>
+    {% endif %}
+  </div>
+</details>
+
+{# ---------- 3. AI editor hooks ---------- #}
+<details class="accord" id="integrations" {% if open_section == 'integrations' %}open{% endif %}>
+  <summary>
+    <span class="caret">▸</span>
+    <span class="lbl">AI editor hooks</span>
+    <span class="hint">Claude Code · Cursor · Windsurf · Cline + MCP upstreams</span>
+  </summary>
+  <div class="body">
+    <p class="lede" style="margin-top:0;">Wire memex into your AI editors so it captures prompts, tool calls, and decisions automatically.</p>
+
+    {% for editor in editors %}
+      <div style="display:grid; grid-template-columns:32px 1fr max-content; gap:12px; align-items:center; padding:10px 0; border-bottom:1px solid var(--border);">
+        <img src="/app/static/editor-logos/{{ editor.logo }}" alt="{{ editor.name }}" style="width:24px; height:24px; object-fit:contain; filter: {% if not editor.detected %}grayscale(1) opacity(0.4){% endif %};">
+        <div>
+          <strong style="font-size:13px;">{{ editor.name }}</strong>
+          <div class="r-meta">
+            {% if editor.detected and editor.wired %}<span style="color:var(--ok);">✓ wired</span>
+            {% elif editor.detected %}<span style="color:var(--warn);">detected, hooks not installed</span>
+            {% else %}<span style="color:var(--muted-2);">not detected on this machine</span>
+            {% endif %}
+            {% if editor.config_path %}<br><code style="font-size:10.5px;">{{ editor.config_path }}</code>{% endif %}
+          </div>
+        </div>
+        <div>
+          {% if editor.detected and not editor.wired %}
+            <form method="post" action="/app/settings/hooks/install" style="margin:0;">
+              <input type="hidden" name="editor" value="{{ editor.key }}">
+              <button class="btn-primary" type="submit" style="font-size:11px;">Install hooks</button>
+            </form>
+          {% elif editor.wired %}
+            <form method="post" action="/app/settings/hooks/uninstall" style="margin:0;">
+              <input type="hidden" name="editor" value="{{ editor.key }}">
+              <button class="btn-secondary" type="submit" style="font-size:11px;">Remove</button>
+            </form>
+          {% endif %}
+        </div>
+      </div>
+    {% endfor %}
+
+    <h3 style="font-size:12.5px; margin:16px 0 8px;">Upstream MCP servers</h3>
+    <p class="r-meta" style="margin:0 0 8px;">Curated catalog of external MCPs memex can route to (GitHub, Slack, filesystem, Postgres, etc.).</p>
+    {% if upstreams %}
+      <ul style="list-style:none; padding:0; margin:0;">
+        {% for u in upstreams %}
+          <li style="padding:6px 0; border-bottom:1px solid var(--border); font-size:12px;">
+            <strong>{{ u.name }}</strong>
+            <span class="r-meta">{{ u.kind }} · {{ u.target }}</span>
+          </li>
+        {% endfor %}
+      </ul>
+    {% else %}
+      <p style="font-size:12.5px; color:var(--muted);">No upstreams installed.</p>
+    {% endif %}
+  </div>
+</details>
+
+{# ---------- 4. Secrets ---------- #}
+<details class="accord" id="secrets" {% if open_section == 'secrets' %}open{% endif %}>
+  <summary>
+    <span class="caret">▸</span>
+    <span class="lbl">Secrets</span>
+    <span class="hint">OS keychain vault ({{ secrets | length }})</span>
+  </summary>
+  <div class="body">
+    {% if secrets %}
+      <ul style="list-style:none; padding:0; margin:0;">
+        {% for s in secrets %}
+          <li style="padding:6px 0; border-bottom:1px solid var(--border); font-size:12px; display:grid; grid-template-columns:1fr max-content; gap:12px;">
+            <div>
+              <strong>secret://{{ s.provider }}/{{ s.name }}</strong>
+              {% if s.last_resolved %}<div class="r-meta">last used {{ s.last_resolved_rel }}</div>{% endif %}
+            </div>
+            <span class="r-meta">{{ s.created_rel }}</span>
+          </li>
+        {% endfor %}
+      </ul>
+    {% else %}
+      <p style="font-size:12.5px; color:var(--muted);">No secrets stored.</p>
+    {% endif %}
+  </div>
+</details>
+
+{# ---------- 5. Codebases ---------- #}
+<details class="accord" id="codebases" {% if open_section == 'codebases' %}open{% endif %}>
+  <summary>
+    <span class="caret">▸</span>
+    <span class="lbl">Codebases</span>
+    <span class="hint">{{ sources | length }} indexed</span>
+  </summary>
+  <div class="body">
+    {% if sources %}
+      <ul style="list-style:none; padding:0; margin:0;">
+        {% for s in sources %}
+          <li style="padding:8px 0; border-bottom:1px solid var(--border); font-size:12.5px;">
+            <a href="/app/code/{{ s.id if s.id else '#' }}" style="color:inherit; text-decoration:none;">
+              <strong>{{ s.name }}</strong>
+              <div class="r-meta">{{ s.path }}{% if s.symbol_count %} · {{ s.symbol_count }} symbols{% endif %}</div>
+            </a>
+          </li>
+        {% endfor %}
+      </ul>
+    {% else %}
+      <p style="font-size:12.5px; color:var(--muted);">No codebases indexed. Use the Code page.</p>
+    {% endif %}
+  </div>
+</details>
+
+{# ---------- 6. Storage ---------- #}
+<details class="accord" id="storage" {% if open_section == 'storage' %}open{% endif %}>
+  <summary>
+    <span class="caret">▸</span>
+    <span class="lbl">Storage</span>
+    <span class="hint">Data dir, counts</span>
+  </summary>
+  <div class="body">
+    <ul style="list-style:none; padding:0; margin:0; font-size:12.5px;">
+      <li style="padding:4px 0;"><strong>Concepts:</strong> {{ stats.concepts or 0 }}</li>
+      <li style="padding:4px 0;"><strong>Vectors:</strong> {{ stats.vectors or 0 }}</li>
+      <li style="padding:4px 0;"><strong>Events:</strong> {{ stats.events or 0 }}</li>
+      <li style="padding:4px 0;"><strong>Embed model:</strong> {{ stats.embed_model or '(not loaded)' }}</li>
+      <li style="padding:4px 0;"><strong>Data dir:</strong> <code>{{ stats.data_dir }}</code></li>
+    </ul>
+  </div>
+</details>
+
+{# ---------- 7. Health (was top-level; demoted here) ---------- #}
+<details class="accord" id="doctor" {% if open_section == 'doctor' %}open{% endif %}>
+  <summary>
+    <span class="caret">▸</span>
+    <span class="lbl">Health checks</span>
+    <span class="hint">{{ doctor.summary.ok }} ok · {{ doctor.summary.warn }} warn · {{ doctor.summary.fail }} fail</span>
+  </summary>
+  <div class="body">
+    <ul class="checks">
+      {% for c in doctor.checks %}
+        <li>
+          <span class="check-status check-{{ c.status }}">{{ c.status }}</span>
+          <span class="check-name">{{ c.name }}</span>
+          <div>
+            <div class="check-detail">{{ c.detail }}</div>
+            {% if c.hint %}<div class="r-meta">{{ c.hint }}</div>{% endif %}
+          </div>
+        </li>
+      {% endfor %}
+    </ul>
+  </div>
+</details>
+
+{# ---------- 8. Advanced ---------- #}
+<details class="accord" id="advanced">
+  <summary>
+    <span class="caret">▸</span>
+    <span class="lbl">Advanced</span>
+    <span class="hint">power-user tooling</span>
+  </summary>
+  <div class="body">
+    <p style="font-size:12.5px;">
+      <a href="/docs">OpenAPI docs</a> · raw daemon endpoints<br>
+      <a href="/app/system">System</a> · events, SLOs, exports, tombstones<br>
+      Open Memory Protocol: <a href="https://github.com/queflyhq/open-memory-protocol" target="_blank">spec on GitHub ↗</a>
+    </p>
+  </div>
+</details>
+{% endblock %}

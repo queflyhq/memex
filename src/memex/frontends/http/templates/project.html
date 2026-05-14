@@ -1,0 +1,205 @@
+{% extends "base.html" %}
+{% block title %}{{ project.name }}{% endblock %}
+{% block content %}
+
+<div style="display:flex; align-items:center; gap:8px; margin-bottom:10px;">
+  <a class="btn-secondary" href="/app/home">← Home</a>
+  <span class="r-meta">/</span>
+  <span class="r-kind kind-project">project</span>
+</div>
+
+<div class="hero-row">
+  <div>
+    <h1 style="margin:0;">{{ project.name }}</h1>
+    {% if project.path %}<p class="lede" style="margin:4px 0 0; font-family:'JetBrains Mono', monospace; font-size:11.5px;">{{ project.path }}</p>{% endif %}
+    {% if project.description %}<p style="font-size:13px; margin:8px 0 0;">{{ project.description }}</p>{% endif %}
+  </div>
+  <div style="display:flex; gap:6px;">
+    <a class="btn-secondary" href="/app/work?action=create_task&project={{ project.name | urlencode }}">+ Task</a>
+    <a class="btn-secondary" href="/app/code?action=add">+ Source</a>
+  </div>
+</div>
+
+{# ---- 4 stat tiles ---- #}
+<div class="status-strip">
+  <div class="status-tile ok" style="cursor:default;">
+    <div class="status-label">Open tasks</div>
+    <div class="status-value">{{ counts.tasks_open }}</div>
+    <div class="status-sub">{{ counts.tasks_completed }} done · {{ counts.tasks_total }} total</div>
+  </div>
+  <div class="status-tile" style="cursor:default;">
+    <div class="status-label">Decisions</div>
+    <div class="status-value">{{ counts.decisions }}</div>
+    <div class="status-sub">durable knowledge</div>
+  </div>
+  <div class="status-tile" style="cursor:default;">
+    <div class="status-label">Code sources</div>
+    <div class="status-value">{{ counts.sources }}</div>
+    <div class="status-sub">{{ counts.files }} files · {{ counts.symbols }} symbols</div>
+  </div>
+  <div class="status-tile" style="cursor:default;">
+    <div class="status-label">People</div>
+    <div class="status-value">{{ counts.people }}</div>
+    <div class="status-sub">git authors + manual</div>
+  </div>
+</div>
+
+{# ---- Kanban: tasks by status ---- #}
+<h2 style="margin-top:20px;">Tasks</h2>
+
+{% if not (tasks.in_progress or tasks.pending or tasks.completed) %}
+<section class="card">
+  <div class="empty"><p>No tasks in this project yet.</p>
+    <a class="cta" href="/app/work?action=create_task&project={{ project.name | urlencode }}">Add a task</a>
+  </div>
+</section>
+{% else %}
+<div class="kanban">
+  {% for lane_label, lane_key, lane_tasks in [
+    ('In progress', 'in_progress', tasks.in_progress),
+    ('Pending',     'pending',     tasks.pending),
+    ('Done',        'completed',   tasks.completed),
+  ] %}
+    <section class="kanban-col">
+      <div class="kanban-head">
+        <span>{{ lane_label }}</span>
+        <span class="r-meta">{{ lane_tasks | length }}</span>
+      </div>
+      <div class="kanban-body">
+        {% if not lane_tasks %}
+          <div class="empty"><p style="font-size:11.5px;">empty</p></div>
+        {% else %}
+          {% for t in lane_tasks %}
+            <div class="kanban-card" id="{{ t.id }}">
+              <div class="kanban-card-name">{{ t.name }}</div>
+              {% if t.description %}<div class="kanban-card-desc">{{ t.description[:140] }}{% if t.description|length > 140 %}…{% endif %}</div>{% endif %}
+              <div class="kanban-card-meta">
+                {% if t.priority %}<span class="pri pri-{{ t.priority }}">{{ t.priority }}</span>{% endif %}
+                {% if t.due_rel %}<span>due {{ t.due_rel }}</span>{% endif %}
+              </div>
+              <div class="kanban-card-actions">
+                {% if lane_key != 'completed' %}
+                  {% if lane_key == 'pending' %}
+                    <form method="post" action="/app/tasks/{{ t.id }}/start" style="margin:0;">
+                      <button type="submit" class="btn-secondary" style="font-size:10.5px;">▶ Start</button>
+                    </form>
+                  {% endif %}
+                  <form method="post" action="/app/tasks/{{ t.id }}/done" style="margin:0;">
+                    <button type="submit" class="btn-secondary" style="color:#15803d; border-color:#bbf7d0; font-size:10.5px;">✓ Done</button>
+                  </form>
+                {% endif %}
+                <form method="post" action="/app/tasks/{{ t.id }}/delete" onsubmit="return confirm('Delete this task?');" style="margin:0;">
+                  <button type="submit" class="btn-secondary" style="color:#b91c1c; border-color:#fecaca; font-size:10.5px;">×</button>
+                </form>
+              </div>
+            </div>
+          {% endfor %}
+        {% endif %}
+      </div>
+    </section>
+  {% endfor %}
+</div>
+{% endif %}
+
+{# ---- Decisions ---- #}
+{% if decisions %}
+<h2 style="margin-top:20px;">Decisions <span class="r-meta">({{ decisions | length }})</span></h2>
+<section class="card" style="padding:0;">
+  {% for d in decisions[:15] %}
+    <a class="result" href="/app/search/{{ d.id }}">
+      <div class="r-row">
+        <span class="r-kind kind-decision">decision</span>
+        <span class="r-name">{{ d.name }}</span>
+      </div>
+      {% if d.description %}<div class="r-desc">{{ d.description[:200] }}{% if d.description|length > 200 %}…{% endif %}</div>{% endif %}
+      {% if d.rel_time %}<div class="r-meta">{{ d.rel_time }}</div>{% endif %}
+    </a>
+  {% endfor %}
+  {% if decisions | length > 15 %}
+    <div style="padding:10px 16px; text-align:center; font-size:11.5px;">
+      <a href="/app/search?kind=decision">View all {{ decisions | length }} decisions →</a>
+    </div>
+  {% endif %}
+</section>
+{% endif %}
+
+{# ---- Sources ---- #}
+{% if sources %}
+<h2 style="margin-top:20px;">Code sources</h2>
+<section class="card" style="padding:0;">
+  {% for s in sources %}
+    <a class="result" href="/app/code/{{ s.id }}">
+      <div class="r-row">
+        <span class="r-kind kind-source">source</span>
+        <span class="r-name">{{ s.name }}</span>
+      </div>
+      <div class="r-meta">{{ s.path }}</div>
+      <div class="r-meta">{{ s.indexed_files }} files · {{ s.indexed_symbols }} symbols</div>
+    </a>
+  {% endfor %}
+</section>
+{% endif %}
+
+{# ---- People ---- #}
+{% if people %}
+<h2 style="margin-top:20px;">People</h2>
+<section class="card" style="padding:0;">
+  {% for p in people %}
+    <a class="result" href="/app/search/{{ p.id }}">
+      <div class="r-row">
+        <span class="r-kind kind-person">person</span>
+        <span class="r-name">{{ p.name }}</span>
+      </div>
+      {% if p.email %}<div class="r-meta">{{ p.email }}</div>{% endif %}
+    </a>
+  {% endfor %}
+</section>
+{% endif %}
+
+<style>
+  .status-strip { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 18px; }
+  .status-tile {
+    padding: 12px 14px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--muted-2);
+    border-radius: var(--radius);
+    text-decoration: none;
+    color: inherit;
+  }
+  .status-tile.ok   { border-left-color: var(--ok); }
+  .status-label { font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:0.06em; color:var(--muted); }
+  .status-value { font-family:"Plus Jakarta Sans",sans-serif; font-size:20px; font-weight:700; color:var(--text); margin:2px 0; }
+  .status-sub { font-size:10.5px; color:var(--muted-2); }
+
+  /* Kanban */
+  .kanban { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+  .kanban-col {
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    overflow: hidden;
+  }
+  .kanban-head {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 10px 14px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    font-weight: 600;
+    font-size: 12.5px;
+  }
+  .kanban-body { padding: 8px; max-height: 60vh; overflow-y: auto; }
+  .kanban-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 10px 12px;
+    margin-bottom: 8px;
+    font-size: 12px;
+  }
+  .kanban-card-name { font-weight: 600; margin-bottom: 4px; }
+  .kanban-card-desc { color: var(--muted); font-size: 11px; line-height: 1.4; margin-bottom: 6px; }
+  .kanban-card-meta { display: flex; gap: 8px; margin-bottom: 6px; font-size: 10.5px; color: var(--muted-2); }
+  .kanban-card-actions { display: flex; gap: 4px; }
+</style>
+{% endblock %}

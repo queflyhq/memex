@@ -277,7 +277,7 @@ def _find_symbols_by_vector(
     if engine.vector.count() == 0:
         return [], True, "vector store empty (no concepts have been indexed yet)"
     try:
-        q_vec = engine.embedding_provider.embed(query)
+        q_vec = engine.embedding_provider.embed(query, is_query=True)
     except Exception as e:  # noqa: BLE001
         log.warning("vector recall: query embedding failed: %s", e)
         return [], True, f"query embedding failed: {e}"

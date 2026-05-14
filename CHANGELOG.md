@@ -2,6 +2,91 @@
 
 All notable changes to memex are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.0] — 2026-05-13 (revised)
+
+Major delta on top of the 2026-05-08 cut. The gate that was the central
+quality issue is fully reworked; OMP v0.1 is fully conformant; the
+cognitive view, code regeneration, and team-rollout CLI are now in place.
+
+### Added (delta from 2026-05-08)
+
+**OMP v0.1 conformance**
+- `GET /version` for federation negotiation
+- `POST /remember` + `/omp/remember` — idempotent on `(name, kind, source)`, preserves prior descriptions in `metadata.previous_descriptions`, emits `concept_revised` events
+- `POST /validate_action` + `/omp/validate` — OMP §4.5 names for the action gate
+- Canonical error envelope `{error, message, retry_after, details}` (§9)
+- Recall strategy enum restricted to spec values (§4.1)
+- Per-verb p99 latency histograms in `/stats.latency` (§6)
+
+**Gate rework**
+- New `kind=action_constraint` — only kind consulted by the gate; plain `constraint` nodes never gate
+- `applies_to`, `match_pattern`, `verdict`, `scope`, `project` metadata
+- Project-scoped constraints (global vs per-project)
+- `step_up` verdict path — surfaces "user confirmation required" to AI
+- Richer deny payload (id + name + snippet + confidence)
+- AFK respect + `MEMEX_DISABLE_CHECK_ACTION` kill switch
+- 5 baseline action_constraints seeded
+
+**Recall, cognition, lifecycle**
+- `GET /recall_bundle` — cognitive view (primary + defined_in + same_as + callers + callees + decisions + constraints + tests + notes)
+- `POST /code/regenerate` — recall_bundle + LLM heavy tier drafts unified diffs (LLM-gated)
+- `GET /review/next-due` — spaced repetition queue
+- Real consolidation pass (was a stub) — name-dedup + co-occurrence
+- Retrieval-induced forgetting (opt-in `MEMEX_RIF=1`)
+- Autonomous discovery worker scaffold (opt-in `MEMEX_DISCOVERY=1`)
+- Episodic rollup (`/maintenance/episodic-rollup`) for GB-scale stores
+
+**LLM hook (opt-in)**
+- Anthropic / OpenAI / Ollama providers with heavy/light model tiers
+- `MEMEX_LLM` explicit selector
+- NoOp fallback — memex never blocks on missing LLM
+
+**CLI**
+- `memex doctor` — 8-check diagnostic, teammate-onboarding command
+- `memex backup` — checkpoint-aware snapshot
+- `memex export` / `memex import` — project-filtered JSONL bundles
+- `memex ingest-md` — recursive markdown ingestion
+- `memex setup-models` — local embedding model bundle
+- `memex train-reranker` — fine-tune cross-encoder on memex's own pairs
+
+**Provenance**
+- User identity auto-capture (`_user_id_from_context`)
+- Ticket auto-detection from git branch (`AUTH-123`)
+- Project auto-detection from cwd / `.memex.json` / env / project nodes
+- User-prompt events now carry user_id + project + ticket metadata
+
+**Schema**
+- New kinds: `action_constraint`, `ephemeral`
+- New Source: `system`
+- `find_by_name_kind_source` lookup
+- Branded short IDs: `mx_<7 hex>` (10 chars total)
+
+**Auto-promote**
+- Every successful `call_upstream` saves the result as `kind=fact` (idempotent on call hash)
+
+### Fixed (delta from 2026-05-08)
+- `/upstreams/catalog` was returning HTTP 500 — `CatalogEntry` is `@dataclass`, switched to `dataclasses.asdict`
+- MCP auth-token disk fallback — `get_settings()` now resolves from `daemon.token` when env var unset
+- Constraint gate misfire — prose principles were gating tool calls; fixed by introducing `action_constraint` kind
+- TodoWrite-sync now idempotent (was creating dupes)
+- recall_bundle name lookup expanded to all kinds
+- Consolidation no longer a literal stub
+
+### Migrated (delta from 2026-05-08)
+- 58 file-memory entries from `~/.claude/projects/.../memory/` → memex
+- 31 workspace projects seeded with paths + workspace
+- 5 action_constraint rules baseline
+- Ayush project scaffolding (microservice topology)
+
+### Known limitations (delta from 2026-05-08)
+- Embedding tier degrades to BM25 due to fastembed/onnxruntime weight-tensor mismatch — pin a known-good pair
+- ID migration of 8K legacy `c_xxx` IDs not yet run (forward-only)
+- `recall_bundle.blame` requires `git` upstream MCP installed
+- Task sequencing (priority/due_at/order) not yet honored in `/tasks` sort
+- Cross-microservice change propagation view not built
+
+---
+
 ## [1.0.0] — 2026-05-08
 
 **memex is generally available.** MIT licensed, local-first, zero telemetry. The pre-1.0 development line consolidates into this stable cut. All public APIs (CLI, HTTP, MCP) follow semantic versioning from here on.

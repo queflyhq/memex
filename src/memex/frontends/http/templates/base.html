@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{% block title %}memeX{% endblock %} — memex</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/app/static/app.css">
+  <script src="/app/static/htmx.min.js" defer></script>
+</head>
+<body>
+<div class="layout">
+  <aside class="sidebar">
+    <div class="brand">
+      <img src="/app/static/quefly-badge.svg" alt="Quefly">
+      <div>
+        <div class="brand-name">memeX</div>
+        <div class="brand-sub">Open Memory Protocol</div>
+      </div>
+    </div>
+
+    <nav>
+      {# Each tab: (active_key, href, label, icon, sub-label). Multiple
+         active_keys are joined by '|' so a single nav entry can cover
+         several routes — e.g. "memory" lights up for /app/search and
+         /app/c/{id} alike. Vocabulary tracks the OMP spec: Memory holds
+         concepts (recall/remember verbs); Work holds tasks + rules +
+         AFK (the validate verb's surface). #}
+      {% set tabs = [
+        ('home',           '/app/home',     'Home',     '⌂', "what's happening"),
+        ('memory|search',  '/app/search',   'Memory',   '⌕', 'recall · remember'),
+        ('code',           '/app/code',     'Code',     '⎈', 'sources · symbols'),
+        ('work|rules|tasks','/app/work',    'Work',     '☑', 'tasks · rules · AFK'),
+        ('skills',         '/app/skills',   'Skills',   '◈', 'validate-before-act'),
+        ('system',         '/app/system',   'System',   '⚡', 'events · maint · SLO'),
+        ('settings',       '/app/settings', 'Settings', '⚙', 'configure'),
+      ] %}
+      {% for active_keys, href, label, ico, sub in tabs %}
+        <a class="nav-btn {% if active in active_keys.split('|') %}active{% endif %}" href="{{ href }}">
+          <span class="ico">{{ ico }}</span>
+          <span class="col">
+            <span class="lbl">{{ label }}</span>
+            <span class="sub">{{ sub }}</span>
+          </span>
+        </a>
+      {% endfor %}
+    </nav>
+
+    <div class="sidebar-footer">
+      <div class="health {% if daemon_alive %}alive{% endif %}">
+        <span class="hb"></span>
+        {{ 'daemon connected' if daemon_alive else 'daemon down' }}
+      </div>
+      <div class="copyright">© Quefly Enterprises LLP · LLPIN ACX-1059</div>
+    </div>
+  </aside>
+
+  <main>
+    {% if global_afk_on %}
+    <div class="afk-banner">
+      <span class="dot"></span>
+      <div>
+        <strong>AFK mode</strong> &mdash; AI tool calls auto-approve.
+        {% if global_afk_until %}Expires <strong>{{ global_afk_until }}</strong>.{% endif %}
+      </div>
+      <form method="post" action="/app/rules/afk/off" style="margin:0;">
+        <button class="btn-secondary" type="submit">Resume gating</button>
+      </form>
+    </div>
+    {% else %}
+    {# Compact AFK toggle visible on every page when gating is active.
+       Click → opens an inline form to pick a duration; submit activates AFK. #}
+    <details class="afk-toggle">
+      <summary>
+        <span class="afk-toggle-dot"></span>
+        <strong>Gating active</strong>
+        <span class="afk-toggle-hint">— click to pause memex (AFK)</span>
+      </summary>
+      <form method="post" action="/app/rules/afk/on" class="afk-toggle-form">
+        <label>Pause memex for
+          <input type="number" name="hours" value="2" min="1" max="24">
+          hours
+        </label>
+        <input type="hidden" name="note" value="paused from header">
+        <button class="btn-primary" type="submit">Activate AFK</button>
+        <span class="afk-toggle-explain">
+          While AFK, AI tool calls auto-approve and decisions get audit-logged. Hard-deny rules (force-push, rm -rf /, etc.) still block.
+        </span>
+      </form>
+    </details>
+    {% endif %}
+    {% block content %}{% endblock %}
+  </main>
+</div>
+</body>
+</html>

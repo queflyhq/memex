@@ -1,0 +1,219 @@
+{% extends "base.html" %}
+{% block title %}Work{% endblock %}
+{% block content %}
+<h1>Work</h1>
+<p class="lede">Everything that shapes what AI does next — gating rules, AFK pause, denial feed, and your task queue. <strong>Validate</strong> consults these before any tool call.</p>
+
+{# ----- AFK + denial summary banner ----- #}
+<div class="card" style="display:grid; grid-template-columns:1fr 1fr; gap:14px; align-items:center;">
+  <div>
+    <div style="display:flex; align-items:baseline; gap:8px;">
+      <h2 style="margin:0;">AFK mode</h2>
+      <span class="check-status {% if afk_on %}check-warn{% else %}check-ok{% endif %}">
+        {{ 'PAUSED' if afk_on else 'GATING' }}
+      </span>
+    </div>
+    <p style="font-size:12px; color:var(--muted); margin:6px 0 0;">
+      {% if afk_on %}AI tool calls auto-approve. {% if afk_until %}Expires {{ afk_until }}.{% endif %}
+      {% else %}Every Claude Code tool call passes through validate.{% endif %}
+    </p>
+    <div style="margin-top:8px;">
+      {% if afk_on %}
+        <form method="post" action="/app/rules/afk/off" style="margin:0;">
+          <button class="btn-primary" type="submit">Resume gating</button>
+        </form>
+      {% else %}
+        <form method="post" action="/app/rules/afk/on" style="display:flex; gap:6px; align-items:center;">
+          <input type="number" name="hours" value="2" min="1" max="24" style="width:55px; padding:6px 8px; border:1px solid var(--border-2); border-radius:var(--radius); font-family:inherit; font-size:12px;">
+          <span style="font-size:11.5px; color:var(--muted);">hrs</span>
+          <button class="btn-secondary" type="submit">Pause memex</button>
+        </form>
+      {% endif %}
+    </div>
+  </div>
+  <div>
+    <h2 style="margin:0;">Recent denials</h2>
+    <p style="font-size:12px; color:var(--muted); margin:6px 0 0;">{{ recent_denials | length }} in last 7 days</p>
+    {% if recent_denials %}
+      <ul class="timeline" style="margin-top:8px;">
+        {% for d in recent_denials[:3] %}
+          <li>
+            <span class="t-when">{{ d.rel_time }}</span>
+            <span class="t-what" style="font-size:11.5px;">{{ d.intent[:80] }}</span>
+          </li>
+        {% endfor %}
+      </ul>
+      {% if recent_denials | length > 3 %}<a href="#denials" class="card-link" style="font-size:11px;">See all →</a>{% endif %}
+    {% endif %}
+  </div>
+</div>
+
+{# ----- Quick tabs (anchor scroll) ----- #}
+<div style="display:flex; gap:6px; margin:18px 0 10px; position:sticky; top:0; background:var(--bg); padding:8px 0; z-index:10;">
+  <a class="btn-secondary" href="#tasks">Tasks ({{ counts.pending + counts.in_progress }})</a>
+  <a class="btn-secondary" href="#rules">Rules ({{ rules | length }})</a>
+  {% if recent_denials %}<a class="btn-secondary" href="#denials">Denials ({{ recent_denials | length }})</a>{% endif %}
+  <span style="flex:1;"></span>
+  <a class="btn-secondary" href="/app/work?action=create_task">+ Task</a>
+  <a class="btn-secondary" href="/app/work?action=create_rule">+ Rule</a>
+</div>
+
+{# ----- Action panels (inline forms) ----- #}
+{% if action == 'create_task' %}
+<section class="card" style="background:var(--surface-2); border-color:var(--accent-bd);">
+  <h2>New task</h2>
+  <form method="post" action="/app/tasks/create">
+    <input name="name" required placeholder="What needs to happen?" style="padding:8px 12px; border:1px solid var(--border-2); border-radius:var(--radius); margin-bottom:10px; font-size:13px; font-family:inherit; width:100%; display:block;">
+    <textarea name="description" rows="2" placeholder="Notes, links, blockers — anything AI should remember when picking this up" style="padding:8px 12px; border:1px solid var(--border-2); border-radius:var(--radius); margin-bottom:10px; font-size:13px; font-family:inherit; width:100%; display:block; resize:vertical;"></textarea>
+    <div style="display:flex; gap:12px; margin-bottom:10px;">
+      <select name="priority" style="padding:6px 10px; border:1px solid var(--border-2); border-radius:var(--radius); font-size:12px; font-family:inherit;">
+        <option value="">priority</option>
+        <option value="low">low</option><option value="medium">medium</option><option value="high">high</option>
+      </select>
+      <input name="project" placeholder="project (optional)" style="padding:6px 10px; border:1px solid var(--border-2); border-radius:var(--radius); font-size:12px; font-family:inherit;">
+    </div>
+    <button class="btn-primary" type="submit">Add task</button>
+    <a class="btn-secondary" href="/app/work" style="margin-left:8px;">Cancel</a>
+  </form>
+</section>
+{% endif %}
+
+{% if action == 'create_rule' %}
+<section class="card" style="background:var(--surface-2); border-color:var(--accent-bd);">
+  <h2>New rule</h2>
+  <p class="lede" style="margin-top:0;">Validate consults this rule before any tool call. If <code>match_pattern</code> matches the intent, AI is blocked.</p>
+  <form method="post" action="/app/rules/create">
+    <input name="name" required placeholder="Short name e.g. 'No force-push to main'" style="padding:8px 12px; border:1px solid var(--border-2); border-radius:var(--radius); margin-bottom:10px; font-size:13px; font-family:inherit; width:100%; display:block;">
+    <input name="match_pattern" required placeholder="Regex on tool intent e.g. 'git push.*--force'" style="padding:8px 12px; border:1px solid var(--border-2); border-radius:var(--radius); margin-bottom:10px; font-size:13px; font-family:inherit; width:100%; display:block; font-family:'JetBrains Mono', monospace;">
+    <textarea name="description" rows="2" placeholder="Why this matters (so future-you remembers)" style="padding:8px 12px; border:1px solid var(--border-2); border-radius:var(--radius); margin-bottom:10px; font-size:13px; font-family:inherit; width:100%; display:block; resize:vertical;"></textarea>
+    <button class="btn-primary" type="submit">Add rule</button>
+    <a class="btn-secondary" href="/app/work" style="margin-left:8px;">Cancel</a>
+  </form>
+</section>
+{% endif %}
+
+{# ----- TASKS ----- #}
+<h2 id="tasks" style="margin-top:18px; padding-top:18px;">Tasks</h2>
+
+{% for project in projects %}
+<section class="card" style="padding:0; margin-bottom:12px;">
+  <div style="padding:12px 16px; border-bottom:1px solid var(--border); background:var(--surface-2);">
+    <strong>{{ project.name }}</strong>
+    <span class="r-meta" style="margin-left:8px;">{{ project.active }} active · {{ project.completed | length }} done</span>
+  </div>
+  {% for status_label, status_key, tasks in [
+    ('In progress', 'in_progress', project.in_progress),
+    ('Pending', 'pending', project.pending),
+    ('Recently completed', 'completed', project.completed),
+  ] %}
+    {% if tasks %}
+    <div style="padding:6px 16px 0; font-size:10px; font-weight:700; letter-spacing:0.06em; text-transform:uppercase; color:var(--muted-2);">{{ status_label }}</div>
+    {% for t in tasks %}
+      <div class="result" id="{{ t.id }}" style="display:grid; grid-template-columns:1fr max-content; gap:12px; align-items:start;">
+        <div>
+          <div class="r-row">
+            <span class="r-name">{{ t.name }}</span>
+            {% if t.priority %}<span class="pri pri-{{ t.priority }}">{{ t.priority }}</span>{% endif %}
+            {% if t.due_rel %}<span class="r-meta">due {{ t.due_rel }}</span>{% endif %}
+          </div>
+          {% if t.description %}<div class="r-desc">{{ t.description[:200] }}{% if t.description|length > 200 %}…{% endif %}</div>{% endif %}
+        </div>
+        <div style="display:flex; gap:6px;">
+          {% if t.status != 'completed' %}
+            <form method="post" action="/app/tasks/{{ t.id }}/done" style="margin:0;">
+              <button type="submit" class="btn-secondary" style="color:#15803d; border-color:#bbf7d0; font-size:11px;">✓ Done</button>
+            </form>
+          {% endif %}
+          <form method="post" action="/app/tasks/{{ t.id }}/delete" onsubmit="return confirm('Delete this task?');" style="margin:0;">
+            <button type="submit" class="btn-secondary" style="color:#b91c1c; border-color:#fecaca; font-size:11px;">×</button>
+          </form>
+        </div>
+      </div>
+    {% endfor %}
+    {% endif %}
+  {% endfor %}
+</section>
+{% endfor %}
+
+{% set total_tasks = 0 %}
+{% for p in projects %}{% set total_tasks = total_tasks + p.active + p.completed | length %}{% endfor %}
+{% if not projects %}
+<section class="card">
+  <div class="empty">
+    <p>No tasks yet. Memex captures TodoWrite tasks from Claude Code automatically, or add one manually.</p>
+    <a class="cta" href="/app/work?action=create_task">Add a task</a>
+  </div>
+</section>
+{% endif %}
+
+{# ----- RULES ----- #}
+<h2 id="rules" style="margin-top:24px; padding-top:18px;">Rules (gate)</h2>
+
+<section class="card" style="padding:0;">
+  <div style="padding:12px 16px; border-bottom:1px solid var(--border); display:flex; justify-content:space-between; align-items:center;">
+    <span class="r-meta">Validate runs these before every tool call</span>
+    <span class="r-meta">{{ rules | length }} configured</span>
+  </div>
+  {% if not rules %}
+    <div class="empty">
+      <p>No rules. Memex won't block anything Claude allows.</p>
+      <div style="margin-top:12px; display:flex; gap:8px; justify-content:center;">
+        <form method="post" action="/app/rules/install-baseline" style="margin:0;">
+          <button class="cta" type="submit">Install the 15-rule safety baseline</button>
+        </form>
+        <a class="btn-secondary" href="/app/work?action=create_rule">Add one manually</a>
+      </div>
+      <p style="margin-top:12px; font-size:11px; color:var(--muted-2);">Baseline covers: force-push, rm -rf /, secrets-in-files, DROP TABLE, kubectl delete prod, terraform auto-approve, and more.</p>
+    </div>
+  {% else %}
+    {# Install-baseline always available, even if some rules exist. #}
+    {% set baseline_count = rules | selectattr('match_pattern')|list|length %}
+    <div style="padding:8px 16px; border-bottom:1px solid var(--border); font-size:11.5px; color:var(--muted); display:flex; gap:8px; align-items:center;">
+      <form method="post" action="/app/rules/install-baseline" style="margin:0;">
+        <button class="btn-secondary" type="submit" style="font-size:11px;">+ Install safety baseline</button>
+      </form>
+      <span>15-rule pack: force-push, rm -rf, secrets, DROP TABLE, kubectl prod, terraform auto-approve…</span>
+    </div>
+
+    {% for r in rules %}
+      <div class="result" style="display:grid; grid-template-columns:1fr max-content; gap:12px; align-items:start; {% if r.disabled %}opacity:0.5; background:var(--surface-2);{% endif %}">
+        <div>
+          <div class="r-row">
+            <span class="r-kind kind-action_constraint">{{ r.verdict }}</span>
+            <span class="r-name">{{ r.name }}</span>
+            {% if r.baseline %}<span class="r-meta" style="font-size:9.5px; padding:1px 5px; background:#dbeafe; color:#1e40af; border-radius:3px; font-weight:600; letter-spacing:0.04em;">QUEFLY BASELINE</span>{% endif %}
+            {% if r.disabled %}<span class="r-meta" style="font-size:9.5px; padding:1px 5px; background:#f3f4f6; color:var(--muted); border-radius:3px; font-weight:600; letter-spacing:0.04em;">DISABLED</span>{% endif %}
+          </div>
+          {% if r.description %}<div class="r-desc">{{ r.description }}</div>{% endif %}
+          {% if r.match_pattern %}<div class="r-meta"><code>{{ r.match_pattern }}</code></div>{% endif %}
+        </div>
+        <div style="display:flex; gap:4px;">
+          <form method="post" action="/app/rules/{{ r.id }}/toggle" style="margin:0;">
+            <button type="submit" class="btn-secondary" style="font-size:11px;">
+              {{ '✓ Enable' if r.disabled else '⏸ Disable' }}
+            </button>
+          </form>
+          <form method="post" action="/app/rules/{{ r.id }}/delete" onsubmit="return confirm('Delete this rule? AI will no longer be blocked by it.');" style="margin:0;">
+            <button type="submit" class="btn-secondary" style="color:#b91c1c; border-color:#fecaca; font-size:11px;">×</button>
+          </form>
+        </div>
+      </div>
+    {% endfor %}
+  {% endif %}
+</section>
+
+{# ----- DENIALS ----- #}
+{% if recent_denials %}
+<h2 id="denials" style="margin-top:24px; padding-top:18px;">All recent denials</h2>
+<section class="card">
+  <ul class="timeline">
+    {% for d in recent_denials %}
+      <li>
+        <span class="t-when">{{ d.rel_time }}</span>
+        <span class="t-what">{{ d.intent }}{% if d.rule %} <em style="color:var(--muted);">— matched "{{ d.rule }}"</em>{% endif %}</span>
+      </li>
+    {% endfor %}
+  </ul>
+</section>
+{% endif %}
+{% endblock %}

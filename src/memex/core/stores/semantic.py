@@ -3,6 +3,11 @@ Semantic store backed by Kuzu (embedded graph DB).
 
 Holds concepts and typed relations. Provenance and confidence are first-class
 columns, not metadata — they're forced by axiom 4 (truth has a source/timestamp).
+
+**Legacy path.** Current memex deployments use the DuckDB-backed semantic
+store in `duckdb_store.py`. Kuzu is kept for the migration helper only,
+so `import kuzu` is made optional — missing kuzu doesn't crash the
+daemon, only the kuzu-specific code paths (which nobody invokes today).
 """
 
 from __future__ import annotations
@@ -14,7 +19,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-import kuzu
+try:
+    import kuzu  # type: ignore
+except ImportError:
+    kuzu = None  # type: ignore[assignment]
 
 from memex.core.schema import Concept, Edge, EdgeKind, NodeKind, Source
 
@@ -61,6 +69,13 @@ class KuzuSemanticStore:
     """
 
     def __init__(self, path: Path):
+        if kuzu is None:
+            raise ImportError(
+                "kuzu is not installed. The legacy Kuzu-backed semantic store is "
+                "kept for migration only; install with `pip install kuzu` if you "
+                "need it. Use the DuckDB-backed store via `DuckDBStores` for "
+                "current deployments."
+            )
         path.parent.mkdir(parents=True, exist_ok=True)
         self.path = path
         self.db = kuzu.Database(str(path))

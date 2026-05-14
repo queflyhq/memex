@@ -39,6 +39,7 @@ class LLMProvider(Protocol):
         system: str | None = None,
         max_tokens: int = 512,
         temperature: float = 0.2,
+        heavy: bool = False,
     ) -> str: ...
 
 
@@ -50,7 +51,7 @@ class NoOpLLMProvider:
     def is_available(self) -> bool:
         return False
 
-    def generate(self, prompt: str, **kwargs: Any) -> str:  # noqa: ARG002
+    def generate(self, prompt: str, *, heavy: bool = False, **kwargs: Any) -> str:  # noqa: ARG002
         raise RuntimeError("no LLM provider available — generation features disabled")
 
 
@@ -120,13 +121,23 @@ class AnthropicProvider:
 
     Stays cold (returns is_available()=False) unless the env var is present —
     so OSS users without an API key never accidentally call it.
+
+    Two models: a fast/cheap default for routine work, and a heavy model
+    that callers can request via `heavy=True` for synthesis tasks
+    (consolidation, code regen, cognitive bundle summarisation).
     """
 
     name = "anthropic"
 
-    def __init__(self, api_key: str | None = None, model: str | None = None):
+    def __init__(self, api_key: str | None = None, model: str | None = None,
+                 heavy_model: str | None = None):
         self.api_key = api_key or os.environ.get("ANTHROPIC_API_KEY")
-        self.model = model or os.environ.get("MEMEX_ANTHROPIC_MODEL", "claude-haiku-4-5-20251001")
+        self.model = model or os.environ.get(
+            "MEMEX_ANTHROPIC_MODEL", "claude-haiku-4-5-20251001"
+        )
+        self.heavy_model = heavy_model or os.environ.get(
+            "MEMEX_ANTHROPIC_HEAVY_MODEL", "claude-sonnet-4-6"
+        )
 
     def is_available(self) -> bool:
         return bool(self.api_key)
@@ -138,11 +149,12 @@ class AnthropicProvider:
         system: str | None = None,
         max_tokens: int = 512,
         temperature: float = 0.2,
+        heavy: bool = False,
     ) -> str:
         if not self.is_available():
             raise RuntimeError("ANTHROPIC_API_KEY not set")
         body: dict[str, Any] = {
-            "model": self.model,
+            "model": self.heavy_model if heavy else self.model,
             "max_tokens": max_tokens,
             "temperature": temperature,
             "messages": [{"role": "user", "content": prompt}],
@@ -164,19 +176,110 @@ class AnthropicProvider:
         return "".join(p.get("text", "") for p in (data.get("content") or []) if p.get("type") == "text").strip()
 
 
-def build_default_llm() -> LLMProvider:
-    """Select the best available provider; never raises.
+class OpenAIProvider:
+    """OpenAI / OpenAI-compatible API via $OPENAI_API_KEY.
 
-    Tries Ollama first (local, free), then Anthropic (cloud, paid), then
-    NoOp. A user who hasn't set anything up gets NoOp and a log line — never
-    an exception.
+    Also works with any OpenAI-compatible endpoint (vLLM, LM Studio,
+    LocalAI, Together, Groq, Fireworks) by setting $OPENAI_BASE_URL.
+
+    Two models: routine + heavy, same as AnthropicProvider.
     """
-    ollama = OllamaProvider()
-    if ollama.is_available():
-        return ollama
+
+    name = "openai"
+
+    def __init__(self, api_key: str | None = None, model: str | None = None,
+                 heavy_model: str | None = None, base_url: str | None = None):
+        self.api_key = api_key or os.environ.get("OPENAI_API_KEY")
+        self.base_url = (
+            base_url
+            or os.environ.get("OPENAI_BASE_URL")
+            or "https://api.openai.com/v1"
+        ).rstrip("/")
+        self.model = model or os.environ.get("MEMEX_OPENAI_MODEL", "gpt-4o-mini")
+        self.heavy_model = heavy_model or os.environ.get(
+            "MEMEX_OPENAI_HEAVY_MODEL", "gpt-4o"
+        )
+
+    def is_available(self) -> bool:
+        return bool(self.api_key)
+
+    def generate(
+        self,
+        prompt: str,
+        *,
+        system: str | None = None,
+        max_tokens: int = 512,
+        temperature: float = 0.2,
+        heavy: bool = False,
+    ) -> str:
+        if not self.is_available():
+            raise RuntimeError("OPENAI_API_KEY not set")
+        messages: list[dict[str, str]] = []
+        if system:
+            messages.append({"role": "system", "content": system})
+        messages.append({"role": "user", "content": prompt})
+        body = {
+            "model": self.heavy_model if heavy else self.model,
+            "messages": messages,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+        }
+        r = httpx.post(
+            f"{self.base_url}/chat/completions",
+            headers={
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json",
+            },
+            json=body,
+            timeout=60.0,
+        )
+        r.raise_for_status()
+        data = r.json()
+        choices = data.get("choices") or []
+        if not choices:
+            return ""
+        return ((choices[0].get("message") or {}).get("content") or "").strip()
+
+
+def build_default_llm() -> LLMProvider:
+    """Select the active LLM provider; never raises.
+
+    Explicit selection: $MEMEX_LLM ∈ {ollama, anthropic, openai, none}
+    overrides auto-discovery — useful when you have multiple keys but
+    want a specific provider for cost or compliance reasons.
+
+    Auto-discovery order: Anthropic → OpenAI → Ollama → NoOp.
+    Anthropic first because the user has stated a Claude preference;
+    OpenAI second so $OPENAI_API_KEY users get a heavy model by default;
+    Ollama last (local but smaller / weaker models). No LLM = NoOp.
+    """
+    explicit = (os.environ.get("MEMEX_LLM") or "").lower().strip()
+    if explicit == "none":
+        return NoOpLLMProvider()
+    if explicit == "anthropic":
+        p = AnthropicProvider()
+        return p if p.is_available() else NoOpLLMProvider()
+    if explicit == "openai":
+        p = OpenAIProvider()
+        return p if p.is_available() else NoOpLLMProvider()
+    if explicit == "ollama":
+        p = OllamaProvider()
+        return p if p.is_available() else NoOpLLMProvider()
+    # Auto-discovery
     anthropic = AnthropicProvider()
     if anthropic.is_available():
-        log.info("using Anthropic LLM provider (model=%s)", anthropic.model)
+        log.info("using Anthropic LLM (default=%s, heavy=%s)",
+                 anthropic.model, anthropic.heavy_model)
         return anthropic
-    log.info("no LLM provider available — generation features disabled")
+    openai = OpenAIProvider()
+    if openai.is_available():
+        log.info("using OpenAI LLM (default=%s, heavy=%s, base=%s)",
+                 openai.model, openai.heavy_model, openai.base_url)
+        return openai
+    ollama = OllamaProvider()
+    if ollama.is_available():
+        log.info("using Ollama LLM (model=%s)", ollama.model)
+        return ollama
+    log.info("no LLM provider available — generation features disabled "
+             "(set ANTHROPIC_API_KEY, OPENAI_API_KEY, or run Ollama)")
     return NoOpLLMProvider()

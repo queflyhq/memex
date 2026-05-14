@@ -53,13 +53,14 @@ _HARD_DENY_BASELINE: tuple[tuple[str, dict[str, Any], str], ...] = (
      "rm -rf on root/home — catastrophic, never auto-approved"),
     ("Bash", {"command": {"regex": r"\brm\s+-r[a-z]*\s+\.(?![A-Za-z0-9._/-])"}},
      "rm -rf . wipes the working tree — never auto-approved"),
-    # Force-push to protected branches.
-    ("Bash", {"command": {"regex": r"git\s+push\s+(--force|-f|--force-with-lease)"
+    # Force-push to protected branches. ONLY matches when an explicit
+    # force flag is present — routine fast-forward `git push origin main`
+    # is permitted (catching that as well was a v0.6 over-correction).
+    # If you want stricter "no direct push to main", set up a per-repo
+    # action_constraint that targets your branch protection scheme.
+    ("Bash", {"command": {"regex": r"git\s+push\s+.*?(--force\b|--force-with-lease\b|(?:^|\s)-f(?:\s|$))"
                                     r".*\b(main|master|production|prod|release)\b"}},
      "force-push to protected branch — never auto-approved"),
-    # Direct push on main while in AFK (side-branch guard).
-    ("Bash", {"command": {"regex": r"git\s+push\s+\S+\s+(main|master|production|prod|release)\b"}},
-     "push to protected branch — confirm explicitly"),
     # Database destruction.
     ("Bash", {"command": {"regex": r"\bDROP\s+(DATABASE|TABLE|SCHEMA)\b",
                           "regex_flags": "i"}},

@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+{% block title %}{{ file.name }}{% endblock %}
+{% block content %}
+
+<div style="display:flex; align-items:center; gap:8px; margin-bottom:10px;">
+  {% if file.source_id %}<a class="btn-secondary" href="/app/code/{{ file.source_id }}">← {{ file.source_name or 'source' }}</a>{% endif %}
+  <span class="r-meta">/</span>
+  <span style="font-family:'JetBrains Mono', monospace; font-size:13px;">{{ file.path or file.name }}</span>
+</div>
+
+<div style="display:flex; gap:14px; align-items:baseline; margin-bottom:10px;">
+  <h1 style="margin:0; font-size:18px;">{{ file.name }}</h1>
+  <span class="r-meta">{{ file.symbol_count or 0 }} symbol{{ '' if file.symbol_count == 1 else 's' }} · {{ file.language or 'plaintext' }}</span>
+</div>
+
+{% if symbols %}
+<section class="card" style="padding:0;">
+  <div style="padding:10px 14px; border-bottom:1px solid var(--border);">
+    <h2 style="margin:0;">Symbols in this file</h2>
+  </div>
+  <ul style="list-style:none; padding:0; margin:0; max-height:260px; overflow-y:auto;">
+    {% for s in symbols %}
+      <li style="padding:6px 14px; border-bottom:1px solid var(--border); font-size:12.5px; display:grid; grid-template-columns:max-content 1fr max-content; gap:10px; align-items:center;">
+        <span class="r-kind kind-symbol">{{ s.symbol_kind or 'sym' }}</span>
+        <a href="/app/code/symbol/{{ s.id }}" style="text-decoration:none;">
+          <strong>{{ s.name }}</strong>
+          {% if s.signature %}<span class="r-meta" style="font-family:'JetBrains Mono', monospace;">{{ s.signature[:90] }}{% if s.signature|length > 90 %}…{% endif %}</span>{% endif %}
+        </a>
+        {% if s.start_line %}<span class="r-meta">L{{ s.start_line }}</span>{% endif %}
+      </li>
+    {% endfor %}
+  </ul>
+</section>
+{% endif %}
+
+{% if file.body %}
+<section class="card" style="padding:0;">
+  <div style="padding:10px 14px; border-bottom:1px solid var(--border);">
+    <h2 style="margin:0;">Source</h2>
+  </div>
+  <pre style="margin:0; max-height:70vh; overflow:auto;"><code class="language-{{ file.language or 'plaintext' }}">{{ file.body }}</code></pre>
+</section>
+{% else %}
+<section class="card">
+  <p class="r-meta">File body not stored. Memex indexes file metadata + symbols by default, not full source. Add `MEMEX_STORE_FILE_BODY=1` and re-index to enable.</p>
+</section>
+{% endif %}
+
+<link rel="stylesheet" href="/app/static/prism.min.css">
+<script src="/app/static/prism.min.js" defer></script>
+<script src="/app/static/prism-langs.min.js" defer></script>
+
+<style>
+  pre[class*="language-"] {
+    font-family:"JetBrains Mono", Consolas, "Courier New", monospace;
+    font-size:12px;
+    padding:14px 16px;
+    background:#1f2328 !important;
+    border-radius:0;
+  }
+</style>
+{% endblock %}

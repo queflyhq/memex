@@ -1,0 +1,99 @@
+{% extends "base.html" %}
+{% block title %}Skills{% endblock %}
+{% block content %}
+<h1>Skills</h1>
+<p class="lede">A skill is a structured "how to approach X" contract — checks the AI self-attests against before generating code for a particular domain (auth, SQL, crypto, …). Run <code>memex install skill:NAME</code> or click below to install.</p>
+
+<div class="hero">
+  <div class="metric" style="cursor:default;">
+    <div class="metric-val">{{ installed | length }}</div>
+    <div class="metric-lbl">installed</div>
+  </div>
+  <div class="metric" style="cursor:default;">
+    <div class="metric-val">{{ builtins | length }}</div>
+    <div class="metric-lbl">available (built-in)</div>
+  </div>
+  <div class="metric" style="cursor:default;">
+    <div class="metric-val">{{ recent_validations | length }}</div>
+    <div class="metric-lbl">validations (7d)</div>
+  </div>
+</div>
+
+<section class="card" style="padding:0;">
+  <div style="padding:12px 16px; border-bottom:1px solid var(--border); display:flex; justify-content:space-between; align-items:center;">
+    <h2 style="margin:0;">Installed skills</h2>
+    <span class="r-meta">memex-managed approaches</span>
+  </div>
+  {% if not installed %}
+    <div class="empty">
+      <p>No skills installed. Click "Install" on any of the built-in skills below to get started.</p>
+    </div>
+  {% else %}
+    {% for s in installed %}
+      <div class="result" style="display:grid; grid-template-columns:1fr max-content; gap:12px; align-items:start;">
+        <div>
+          <div class="r-row">
+            <span class="r-kind kind-pattern">skill</span>
+            <span class="r-name">{{ s.name }}</span>
+            {% if s.version %}<span class="r-meta">v{{ s.version }}</span>{% endif %}
+          </div>
+          {% if s.description %}<div class="r-desc">{{ s.description }}</div>{% endif %}
+          {% if s.checks_count %}<div class="r-meta">{{ s.checks_count }} self-attestation checks</div>{% endif %}
+        </div>
+        <form method="post" action="/app/skills/test" style="margin:0;">
+          <input type="hidden" name="skill" value="{{ s.name }}">
+          <button type="submit" class="btn-secondary" style="font-size:11px;">Test</button>
+        </form>
+      </div>
+    {% endfor %}
+  {% endif %}
+</section>
+
+<section class="card" style="padding:0; margin-top:14px;">
+  <div style="padding:12px 16px; border-bottom:1px solid var(--border);">
+    <h2 style="margin:0;">Built-in skills</h2>
+    <p class="r-meta" style="margin-top:4px;">Ship with memex; install with one click.</p>
+  </div>
+  {% if not builtins %}
+    <div class="empty"><p>No built-in skills available.</p></div>
+  {% else %}
+    {% for s in builtins %}
+      <div class="result" style="display:grid; grid-template-columns:1fr max-content; gap:12px; align-items:start;">
+        <div>
+          <div class="r-row">
+            <span class="r-kind kind-pattern">skill</span>
+            <span class="r-name">{{ s.name }}</span>
+            {% if s.version %}<span class="r-meta">v{{ s.version }}</span>{% endif %}
+            {% if s.installed %}<span class="r-meta" style="font-size:9.5px; padding:1px 5px; background:#d1fae5; color:#065f46; border-radius:3px; font-weight:600;">INSTALLED</span>{% endif %}
+          </div>
+          {% if s.description %}<div class="r-desc">{{ s.description }}</div>{% endif %}
+          {% if s.triggers %}<div class="r-meta">triggers: {{ s.triggers | join(', ') }}</div>{% endif %}
+        </div>
+        {% if not s.installed %}
+          <form method="post" action="/app/skills/install" style="margin:0;">
+            <input type="hidden" name="name" value="{{ s.name }}">
+            <button type="submit" class="btn-primary" style="font-size:11px;">Install</button>
+          </form>
+        {% endif %}
+      </div>
+    {% endfor %}
+  {% endif %}
+</section>
+
+{% if recent_validations %}
+<section class="card" style="margin-top:14px;">
+  <div class="card-head">
+    <h2>Recent validations</h2>
+    <span class="r-meta">last 7 days</span>
+  </div>
+  <ul class="timeline">
+    {% for v in recent_validations %}
+      <li>
+        <span class="t-when">{{ v.rel_time }}</span>
+        <span class="t-what">{{ v.skill }}{% if v.outcome %} — {{ v.outcome }}{% endif %}</span>
+      </li>
+    {% endfor %}
+  </ul>
+</section>
+{% endif %}
+{% endblock %}
