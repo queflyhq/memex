@@ -155,26 +155,81 @@ class ClaudeCode(_Integration):
         return Path.home() / ".claude.json"
 
 
-class Cursor(_Integration):
+class _IntegrationWithRules(_Integration):
+    """Base for editors that DON'T have lifecycle hooks like Claude Code.
+
+    For Cursor / Windsurf / Cline we can't observe events passively — they
+    have no hook system. The mitigation is a per-editor rules file that
+    tells the AI to call memex tools aggressively, behaving like a hook.
+    """
+
+    rules_path: Path | None = None
+
+    def install_rules(self) -> Path | None:
+        """Write the memex-usage rules to the editor's convention path.
+        Idempotent — overwrites with the latest template each install.
+        """
+        if self.rules_path is None:
+            return None
+        # Load the template from the package.
+        import importlib.resources as _res
+        try:
+            tmpl = _res.files("memex.integrations.rules").joinpath(
+                "memex-rules.md"
+            ).read_text(encoding="utf-8")
+        except Exception:  # noqa: BLE001
+            return None
+        self.rules_path.parent.mkdir(parents=True, exist_ok=True)
+        self.rules_path.write_text(tmpl, encoding="utf-8")
+        return self.rules_path
+
+    def wire(self) -> WireResult:
+        result = super().wire()
+        # Also install the rules file so the AI knows to call memex.
+        try:
+            self.install_rules()
+        except Exception:  # noqa: BLE001
+            pass
+        return result
+
+
+class Cursor(_IntegrationWithRules):
     name = "Cursor"
 
     def config_path(self) -> Path:
         return Path.home() / ".cursor" / "mcp.json"
 
+    @property
+    def rules_path(self) -> Path | None:
+        # Cursor reads rules from .cursor/rules/*.mdc per the v0.42+ convention.
+        # We use a project-agnostic global rule at $HOME/.cursor/rules/memex.mdc.
+        return Path.home() / ".cursor" / "rules" / "memex.mdc"
 
-class Windsurf(_Integration):
+
+class Windsurf(_IntegrationWithRules):
     name = "Windsurf"
 
     def config_path(self) -> Path:
         return Path.home() / ".codeium" / "windsurf" / "mcp_config.json"
 
+    @property
+    def rules_path(self) -> Path | None:
+        # Windsurf uses global rules at ~/.codeium/windsurf/memories/global_rules.md
+        # We append to it if it exists, otherwise create.
+        return Path.home() / ".codeium" / "windsurf" / "memories" / "memex_global_rules.md"
 
-class Cline(_Integration):
+
+class Cline(_IntegrationWithRules):
     """Cline VS Code extension — config lives in VS Code's globalStorage."""
 
     name = "Cline (VS Code)"
     _ext = "saoudrizwan.claude-dev"
     _file = "cline_mcp_settings.json"
+
+    @property
+    def rules_path(self) -> Path | None:
+        # Cline reads custom instructions from globalStorage/.../custom_instructions.txt
+        return self.config_path().parent / "memex_custom_instructions.md"
 
     def config_path(self) -> Path:
         sysname = platform.system()

@@ -1655,7 +1655,7 @@ class HTTPFrontend:
         @app.post("/app/tasks/create", include_in_schema=False)
         async def _ui_tasks_create(request: Request) -> RedirectResponse:
             form = await request.form()
-            from memex.core.schema import Concept, NodeKind as _NK, Source
+            from memex.core.schema import Concept, Edge, EdgeKind, NodeKind as _NK, Source
             name = str(form.get("name") or "").strip()
             description = str(form.get("description") or "").strip() or None
             priority = str(form.get("priority") or "").strip() or None
@@ -1665,10 +1665,26 @@ class HTTPFrontend:
             meta: dict[str, Any] = {"status": "pending"}
             if priority: meta["priority"] = priority
             if project: meta["project"] = project
-            engine.semantic.add_concept(Concept(
+            task_id = engine.semantic.add_concept(Concept(
                 name=name, kind=_NK.task, description=description,
                 source=Source.human, metadata=meta,
             ))
+            # If a project name was supplied, link the task to the matching
+            # project concept via `part_of` so the Project detail page +
+            # cross-page navigation works ("show me all tasks in project X").
+            # Idempotent: only links if a project of that name exists.
+            if project:
+                try:
+                    existing_project = engine.semantic.find_by_name_kind_source(
+                        project, _NK.project, Source.human,
+                    )
+                    if existing_project is not None:
+                        engine.semantic.add_edge(Edge(
+                            from_id=task_id, to_id=existing_project.id,
+                            kind=EdgeKind.part_of, source=Source.human,
+                        ))
+                except Exception as e:  # noqa: BLE001
+                    log.debug("task->project link skipped: %s", e)
             return RedirectResponse(url="/app/tasks", status_code=303)
 
         @app.post("/app/tasks/{cid}/start", include_in_schema=False)
@@ -2282,6 +2298,9 @@ class HTTPFrontend:
                 {"slug": "cross-repo", "label": "Cross-repo same_as linker",
                  "desc": "Detect symbols that exist in multiple sources (e.g. shared types)",
                  "url": "/maintenance/cross-repo-link", "cadence": "manual"},
+                {"slug": "link-tasks", "label": "Link tasks to projects",
+                 "desc": "Retroactively create part_of edges from tasks to their project concept",
+                 "url": "/maintenance/link-tasks-to-projects", "cadence": "manual"},
             ]
             # Recent events (optionally filtered by kind).
             raw_events = list(engine.episodic.recent(limit=200, kind=kind or None) or [])
@@ -2391,6 +2410,43 @@ class HTTPFrontend:
             """Manual trigger for the prompt-fact extractor."""
             from memex.core.lifecycle.prompt_facts import extract_prompt_facts
             return extract_prompt_facts(engine)
+
+        @app.post("/maintenance/link-tasks-to-projects", include_in_schema=False)
+        def _ui_link_tasks_to_projects() -> dict[str, Any]:
+            """Retroactive: link every task whose metadata.project matches an
+            existing project concept name. Idempotent — re-running is safe.
+            """
+            from memex.core.schema import Edge, EdgeKind, NodeKind as _NK, Source
+            try:
+                projects = engine.semantic.find_by_kind(_NK.project) or []
+                proj_by_name = {p.name: p.id for p in projects}
+                tasks = engine.semantic.find_by_kind(_NK.task) or []
+                # Existing part_of edges from tasks to projects
+                with engine.semantic._lock:  # type: ignore[attr-defined]
+                    existing_rows = engine.semantic.conn.execute(  # type: ignore[attr-defined]
+                        "SELECT from_id, to_id FROM edges WHERE kind = 'part_of'",
+                    ).fetchall()
+                existing = {(f, t) for f, t in existing_rows}
+                linked = 0
+                for t in tasks:
+                    proj_name = (t.metadata or {}).get("project")
+                    if not proj_name or proj_name not in proj_by_name:
+                        continue
+                    pid = proj_by_name[proj_name]
+                    if (t.id, pid) in existing:
+                        continue
+                    try:
+                        engine.semantic.add_edge(Edge(
+                            from_id=t.id, to_id=pid,
+                            kind=EdgeKind.part_of, source=Source.system,
+                        ))
+                        linked += 1
+                    except Exception:  # noqa: BLE001
+                        pass
+                return {"linked": linked, "tasks_scanned": len(tasks),
+                        "projects": len(projects)}
+            except Exception as e:  # noqa: BLE001
+                return {"error": str(e)}
 
         @app.post("/maintenance/cross-repo-link", include_in_schema=False)
         def _ui_run_cross_repo_link() -> dict[str, Any]:

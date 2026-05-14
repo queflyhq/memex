@@ -1914,6 +1914,48 @@ def hooks_install(
                     ],
                 }
             ],
+            # Full Claude Code event coverage — these 4 fire on signals
+            # that memex previously missed. Cheap (just observe), but they
+            # close the "we capture everything" gap.
+            "SessionEnd": [
+                {
+                    "matcher": "*",
+                    "hooks": [
+                        {"type": "command", "command": _c("observe-event", "session_end")}
+                    ],
+                }
+            ],
+            "SubagentStop": [
+                {
+                    "matcher": "*",
+                    "hooks": [
+                        # Subagent stops are interesting: they tell memex when
+                        # an Agent tool call wraps up so we can record outcomes.
+                        {"type": "command", "command": _c("observe-event", "subagent_stop")}
+                    ],
+                }
+            ],
+            "PreCompact": [
+                {
+                    "matcher": "*",
+                    "hooks": [
+                        # Conversation compaction is a natural consolidation
+                        # trigger — memex hears that history is being summarized
+                        # and can mirror the move on its own episodic stream.
+                        {"type": "command", "command": _c("observe-event", "pre_compact")}
+                    ],
+                }
+            ],
+            "Notification": [
+                {
+                    "matcher": "*",
+                    "hooks": [
+                        # Editor-level notifications (auth prompts, errors, etc.).
+                        # Useful for "AI is blocked waiting on user" signal.
+                        {"type": "command", "command": _c("observe-event", "notification")}
+                    ],
+                }
+            ],
         }
     }
     if not apply:
