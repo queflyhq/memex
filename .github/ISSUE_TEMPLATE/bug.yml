@@ -1,0 +1,86 @@
+name: Bug report
+description: Something isn't working as documented or expected.
+title: "[bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug. The clearer the repro, the faster we can fix it.
+
+        Please run `memex doctor` and paste the output below — it captures most of the environment we need.
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: What happened
+      description: A clear, concise description of the bug.
+      placeholder: When I run `memex recall ...`, the daemon returns a 500 instead of the expected subgraph.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: How to reproduce
+      description: Minimal steps. Include the exact commands and flags.
+      placeholder: |
+        1. memex install skill:core-validations
+        2. memex add "test concept" --kind decision
+        3. memex recall "test"
+    validations:
+      required: true
+
+  - type: textarea
+    id: doctor
+    attributes:
+      label: memex doctor output
+      description: Run `memex doctor` and paste the full output here.
+      render: shell
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: memex version
+      placeholder: "1.0.0"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: OS
+      options:
+        - macOS
+        - Linux
+        - Windows
+        - Docker
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Daemon logs (if applicable)
+      description: Last ~50 lines of `<data_dir>/daemon.log`. Redact anything sensitive.
+      render: shell
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Pre-flight
+      options:
+        - label: I searched existing issues and didn't find a duplicate.
+          required: true
+        - label: I'm on a supported version (1.x).
+          required: true

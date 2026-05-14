@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Documentation
+    url: https://quefly.com/docs/memex
+    about: Quickstart, concepts, skills, editor recipes, and HTTP API reference.
+  - name: Security report
+    url: https://github.com/queflyhq/memex/security/advisories/new
+    about: Report a security vulnerability privately. Do not file a public issue.
+  - name: Discussions
+    url: https://github.com/queflyhq/memex/discussions
+    about: Questions, design ideas, and show-and-tell.

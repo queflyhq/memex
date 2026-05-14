@@ -21,6 +21,7 @@ if TYPE_CHECKING:
         EpisodicEvent,
         NodeKind,
         RecallResult,
+        Source,
     )
 
 
@@ -32,6 +33,15 @@ class SemanticStore(Protocol):
     def add_edge(self, e: Edge) -> None: ...
     def get_concept(self, concept_id: str) -> Concept | None: ...
     def all_concepts(self) -> list[Concept]: ...
+    def find_by_kind(self, kind: NodeKind) -> list[Concept]: ...
+    def find_by_name_kind_source(
+        self,
+        name: str,
+        kind: NodeKind | None,
+        source: "Source | None",
+    ) -> Concept | None: ...
+    def edges_for(self, concept_id: str) -> list[Edge]: ...
+    def delete_concept(self, concept_id: str) -> bool: ...
     def neighbors(
         self,
         concept_id: str,

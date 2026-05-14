@@ -1,0 +1,94 @@
+{% extends "base.html" %}
+{% block title %}Rules{% endblock %}
+{% block content %}
+<h1>What your AI shouldn't do</h1>
+<p class="lede">Rules memex enforces before letting AI run a tool. Plus an AFK switch if you need it to chill.</p>
+
+<section class="card" style="display:grid; grid-template-columns:1fr max-content; gap:16px; align-items:center;">
+  <div>
+    <h2 style="margin:0 0 4px;">AFK mode</h2>
+    <p style="font-size:12.5px; color:var(--muted); margin:0;">
+      {% if afk_on %}Memex is paused. AI runs without the gate.
+      {% else %}Memex gates every Claude Code tool call. Pause if you need an unblocked window.
+      {% endif %}
+    </p>
+  </div>
+  {% if afk_on %}
+    <form method="post" action="/app/rules/afk/off">
+      <button class="btn-primary" type="submit">Resume gating</button>
+    </form>
+  {% else %}
+    <form method="post" action="/app/rules/afk/on" style="display:flex; gap:6px; align-items:center;">
+      <input type="number" name="hours" value="2" min="1" max="24" style="width:55px; padding:6px 8px; border:1px solid var(--border-2); border-radius:var(--radius); font-family:inherit; font-size:12px;">
+      <span style="font-size:11.5px; color:var(--muted);">hrs</span>
+      <button class="btn-secondary" type="submit">Pause memex</button>
+    </form>
+  {% endif %}
+</section>
+
+{% if recent_denials %}
+<section class="card">
+  <div class="card-head">
+    <h2>What got blocked recently</h2>
+    <span class="r-meta">last 7 days</span>
+  </div>
+  <ul class="timeline">
+    {% for d in recent_denials %}
+      <li>
+        <span class="t-when">{{ d.rel_time }}</span>
+        <span class="t-what">{{ d.intent }}{% if d.rule %} <em style="color:var(--muted);">— matched "{{ d.rule }}"</em>{% endif %}</span>
+      </li>
+    {% endfor %}
+  </ul>
+</section>
+{% endif %}
+
+{% if action == 'create' %}
+<section class="card" style="background:var(--surface-2); border-color:var(--accent-bd);">
+  <h2>Add a rule</h2>
+  <p class="lede">Memex consults this rule on every tool call. If it matches, AI gets blocked.</p>
+  <form method="post" action="/app/rules/create">
+    <label style="font-size:11.5px; color:var(--muted); display:block; margin-bottom:4px;">Short name</label>
+    <input name="name" required placeholder="e.g. 'No force-pushing to main'" style="padding:8px 12px; border:1px solid var(--border-2); border-radius:var(--radius); margin-bottom:10px; font-size:13px; font-family:inherit; width:100%; display:block;">
+    <label style="font-size:11.5px; color:var(--muted); display:block; margin-bottom:4px;">When does this apply? (regex on the tool intent)</label>
+    <input name="match_pattern" required placeholder="e.g. 'git push.*--force'" style="padding:8px 12px; border:1px solid var(--border-2); border-radius:var(--radius); margin-bottom:10px; font-size:13px; font-family:inherit; width:100%; display:block;">
+    <label style="font-size:11.5px; color:var(--muted); display:block; margin-bottom:4px;">Why does this matter? (so future-you remembers)</label>
+    <textarea name="description" rows="2" placeholder="e.g. 'Force-push rewrites history and loses teammate work'" style="padding:8px 12px; border:1px solid var(--border-2); border-radius:var(--radius); margin-bottom:10px; font-size:13px; font-family:inherit; width:100%; display:block; resize:vertical;"></textarea>
+    <button class="btn-primary" type="submit">Add rule</button>
+    <a class="btn-secondary" href="/app/rules" style="margin-left:8px;">Cancel</a>
+  </form>
+</section>
+{% endif %}
+
+<section class="card" style="padding:0;">
+  <div style="padding:14px 16px; border-bottom:1px solid var(--border); display:flex; justify-content:space-between; align-items:center;">
+    <h2 style="margin:0;">Your rules</h2>
+    <div style="display:flex; gap:8px; align-items:center;">
+      <span class="r-meta">{{ rules | length }} active</span>
+      {% if action != 'create' %}<a class="btn-secondary" href="/app/rules?action=create">+ Add rule</a>{% endif %}
+    </div>
+  </div>
+  {% if not rules %}
+    <div class="empty">
+      <p>No rules yet. Memex will let AI do anything Claude allows.</p>
+      <a class="cta" href="/app/rules?action=create">Add your first rule</a>
+    </div>
+  {% else %}
+    {% for r in rules %}
+      <div class="result" style="display:grid; grid-template-columns:1fr max-content; gap:12px; align-items:start;">
+        <div>
+          <div class="r-row">
+            <span class="r-kind kind-action_constraint">{{ r.verdict }}</span>
+            <span class="r-name">{{ r.name }}</span>
+          </div>
+          {% if r.description %}<div class="r-desc">{{ r.description }}</div>{% endif %}
+          {% if r.match_pattern %}<div class="r-meta"><code>{{ r.match_pattern }}</code></div>{% endif %}
+        </div>
+        <form method="post" action="/app/rules/{{ r.id }}/delete" onsubmit="return confirm('Delete this rule? AI will no longer be blocked by it.');">
+          <button type="submit" class="btn-secondary" style="color:#b91c1c; border-color:#fecaca; font-size:11px;">Delete</button>
+        </form>
+      </div>
+    {% endfor %}
+  {% endif %}
+</section>
+{% endblock %}

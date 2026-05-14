@@ -1,0 +1,323 @@
+{% extends "base.html" %}
+{% block title %}Home{% endblock %}
+{% block content %}
+{# Home as a real dashboard — at a glance:
+   - Status strip (AFK / service / team sync / scheduler)
+   - Today's activity (concepts, tasks, denials, recalls)
+   - Top projects (per-project mini-dashboards)
+   - Recent learning timeline
+   - Quick actions + recall box
+#}
+
+<div class="hero-row">
+  <div>
+    <h1 style="margin:0;">Memex dashboard</h1>
+    <p class="lede" style="margin:4px 0 0;">{{ greeting }}</p>
+  </div>
+  <a class="health-pill {{ doctor_summary }}" href="/app/system">
+    <span class="dot"></span>
+    <span>
+      {% if doctor_summary == 'ok' %}all systems healthy
+      {% elif doctor_summary == 'warn' %}{{ doctor_warn_count }} warning{{ '' if doctor_warn_count == 1 else 's' }}
+      {% else %}needs attention{% endif %}
+    </span>
+  </a>
+</div>
+
+{# ---- Status strip: 4 system signals at a glance ---- #}
+<div class="status-strip">
+  <a class="status-tile {{ 'ok' if service_running else 'warn' }}" href="/app/settings#service" title="Memex daemon as a user service (Mac launchd / Win Task Scheduler / Linux systemd)">
+    <div class="status-label">Service</div>
+    <div class="status-value">{{ 'always-on' if service_running else 'manual' }}</div>
+    <div class="status-sub">{{ service_platform }}</div>
+  </a>
+  <a class="status-tile {{ 'ok' if team_sync_configured else '' }}" href="/app/settings#team" title="Git-sync of durable knowledge with teammates">
+    <div class="status-label">Team sync</div>
+    <div class="status-value">{{ 'connected' if team_sync_configured else 'solo' }}</div>
+    {% if team_sync_last %}<div class="status-sub">last {{ team_sync_last }}</div>{% endif %}
+  </a>
+  <a class="status-tile ok" href="/app/system#maintenance" title="Background maintenance jobs running on cadences">
+    <div class="status-label">Auto-maint</div>
+    <div class="status-value">{{ scheduler_job_count }} jobs</div>
+    {% if scheduler_last_run %}<div class="status-sub">last {{ scheduler_last_run }}</div>{% endif %}
+  </a>
+  {% if token_savings.saved_usd > 0 %}
+    <a class="status-tile ok" href="/app/system#export" title="Click for token-saving math">
+      <div class="status-label">Saved this week</div>
+      <div class="status-value">${{ token_savings.saved_usd }}</div>
+      <div class="status-sub">{{ token_savings.saved_tokens_human }} tokens</div>
+    </a>
+  {% else %}
+    <a class="status-tile warn" href="/app/settings#integrations" title="Memex isn't seeing context-injection events. Install AI editor hooks to start tracking.">
+      <div class="status-label">Token savings</div>
+      <div class="status-value">install hooks</div>
+      <div class="status-sub">no events captured yet</div>
+    </a>
+  {% endif %}
+</div>
+
+{# ---- Recall box ---- #}
+<form class="ask-box" method="get" action="/app/search">
+  <input
+    type="text"
+    name="q"
+    placeholder="Recall — ask memex anything. e.g. 'what did we decide about auth?'"
+    autofocus
+  >
+  <button class="btn-primary" type="submit">Recall</button>
+</form>
+
+{# ---- Today's activity ---- #}
+<section class="card today-card">
+  <div class="card-head">
+    <h2>Today</h2>
+    <a class="card-link" href="/app/system">All activity →</a>
+  </div>
+  <div class="today-grid">
+    <div class="today-stat"><strong>{{ today.concepts_created }}</strong><span>things remembered</span></div>
+    <div class="today-stat"><strong>{{ today.tasks_completed }}</strong><span>tasks done</span></div>
+    <div class="today-stat"><strong>{{ today.recalls }}</strong><span>recall queries</span></div>
+    <div class="today-stat"><strong>{{ today.denials }}</strong><span>blocked actions</span></div>
+    <div class="today-stat"><strong>{{ today.corrections }}</strong><span>corrections</span></div>
+  </div>
+</section>
+
+{# ---- Top projects ---- #}
+{% if projects %}
+<section class="card">
+  <div class="card-head">
+    <h2>Active projects</h2>
+    <a class="card-link" href="/app/code">All projects →</a>
+  </div>
+  <div class="project-grid">
+    {% for p in projects %}
+      <a class="project-tile" href="/app/project/{{ p.id }}" title="{{ p.path or '' }}">
+        <div class="project-name">{{ p.name }}</div>
+        <div class="project-stats">
+          {% if p.task_count %}<span><strong>{{ p.task_count }}</strong> tasks</span>{% endif %}
+          {% if p.decision_count %}<span><strong>{{ p.decision_count }}</strong> decisions</span>{% endif %}
+          {% if p.source_count %}<span><strong>{{ p.source_count }}</strong> sources</span>{% endif %}
+        </div>
+        {% if p.last_activity_rel %}<div class="project-sub">last activity {{ p.last_activity_rel }}</div>{% endif %}
+      </a>
+    {% endfor %}
+  </div>
+</section>
+{% endif %}
+
+{# ---- Two-column: recent learning + nudges ---- #}
+<div class="dash-split">
+  <section class="card">
+    <div class="card-head">
+      <h2>What memex picked up</h2>
+      <a class="card-link" href="/app/search">Browse memory →</a>
+    </div>
+    {% if not timeline %}
+      <div class="empty">
+        <p>Nothing learned yet. Start working with an AI editor, or tell memex something.</p>
+        <a class="cta" href="/app/search?action=create">Add a fact</a>
+      </div>
+    {% else %}
+      <ul class="timeline">
+        {% for item in timeline %}
+          <li>
+            <span class="t-when">{{ item.rel_time }}</span>
+            <span class="t-what">{{ item.label }}{% if item.name %} &mdash; <em>{{ item.name }}</em>{% endif %}</span>
+          </li>
+        {% endfor %}
+      </ul>
+    {% endif %}
+  </section>
+
+  <section class="card">
+    <div class="card-head">
+      <h2>Nudges</h2>
+      <span class="r-meta">things to look at</span>
+    </div>
+    <ul class="nudges">
+      {% if recent_denials %}
+        <li>
+          <a href="/app/work#denials">
+            <strong>{{ recent_denials | length }}</strong> blocked action{{ '' if recent_denials|length == 1 else 's' }} this week
+            <span class="r-meta">review the rules</span>
+          </a>
+        </li>
+      {% endif %}
+      {% if stale_count %}
+        <li>
+          <a href="/app/search?stale=1">
+            <strong>{{ stale_count }}</strong> stale concept{{ '' if stale_count == 1 else 's' }}
+            <span class="r-meta">haven't been confirmed in 90+ days</span>
+          </a>
+        </li>
+      {% endif %}
+      {% if next_actions %}
+        <li>
+          <a href="/app/work">
+            <strong>{{ next_actions | length }}</strong> next action{{ '' if next_actions|length == 1 else 's' }}
+            <span class="r-meta">unblocked tasks</span>
+          </a>
+        </li>
+      {% endif %}
+      {% if not recent_denials and not stale_count and not next_actions %}
+        <li class="empty-line">Nothing needs attention right now.</li>
+      {% endif %}
+    </ul>
+  </section>
+</div>
+
+{# ---- Quick actions ---- #}
+<div class="quick-row">
+  <a href="/app/search?action=create" class="quick-tile">
+    <div class="quick-emoji">+</div>
+    <div class="quick-name">Tell memex something</div>
+    <div class="quick-sub">a fact, a decision, anything</div>
+  </a>
+  <a href="/app/work?action=create_task" class="quick-tile">
+    <div class="quick-emoji">☑</div>
+    <div class="quick-name">Add a task</div>
+    <div class="quick-sub">things to do later</div>
+  </a>
+  <a href="/app/work?action=create_rule" class="quick-tile">
+    <div class="quick-emoji">⛨</div>
+    <div class="quick-name">Add a rule</div>
+    <div class="quick-sub">things AI shouldn't do</div>
+  </a>
+  <a href="#seed" class="quick-tile">
+    <div class="quick-emoji">⚡</div>
+    <div class="quick-name">Seed from a repo</div>
+    <div class="quick-sub">extract git history → memory</div>
+  </a>
+</div>
+
+{# ---- Seed-from-repo card ---- #}
+<section class="card" id="seed">
+  <div class="card-head">
+    <h2>Seed from repository</h2>
+    <span class="r-meta">solves day-1 empty graph</span>
+  </div>
+  <p class="lede" style="margin-top:0;">Point at any local repo. Memex extracts: meaningful commits, README / ARCHITECTURE / DECISIONS / ADRs / CHANGELOG, manifest dependencies, and (optional) AST symbols. Idempotent.</p>
+  <form hx-post="/app/seed" hx-target="#seed-result" hx-swap="innerHTML" style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+    <input
+      name="path"
+      placeholder="C:\path\to\your\repo"
+      style="flex:1; min-width:300px; padding:9px 14px; border:1px solid var(--border-2); border-radius:var(--radius); font-size:13px; font-family:inherit;"
+      required
+    >
+    <label style="font-size:11.5px; color:var(--muted); display:flex; align-items:center; gap:4px;">
+      <input type="checkbox" name="skip_code" value="1"> skip AST indexing (faster)
+    </label>
+    <button class="btn-primary" type="submit">Seed</button>
+  </form>
+  <div id="seed-result" style="margin-top:12px;"></div>
+</section>
+
+<style>
+  /* AFK banner — persistent across page */
+  .afk-banner {
+    display: grid;
+    grid-template-columns: 16px 1fr max-content;
+    gap: 12px;
+    align-items: center;
+    padding: 10px 16px;
+    background: #fffbeb;
+    border: 1px solid #fde68a;
+    border-radius: var(--radius);
+    margin-bottom: 14px;
+    font-size: 13px;
+    color: #78350f;
+  }
+  .afk-banner .dot {
+    width: 10px; height: 10px; border-radius: 50%;
+    background: #d97706;
+    box-shadow: 0 0 0 4px rgba(217,119,6,0.18);
+    animation: pulse-warn 1.8s ease-out infinite;
+  }
+  @keyframes pulse-warn {
+    0%   { box-shadow: 0 0 0 0 rgba(217,119,6,0.45); }
+    70%  { box-shadow: 0 0 0 8px rgba(217,119,6,0); }
+    100% { box-shadow: 0 0 0 0 rgba(217,119,6,0); }
+  }
+  .hero-row { display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:14px; }
+
+  /* Status strip */
+  .status-strip { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 18px; }
+  .status-tile {
+    display: block;
+    padding: 12px 14px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    text-decoration: none;
+    color: inherit;
+    transition: transform 80ms ease, box-shadow 80ms ease;
+    border-left: 3px solid var(--muted-2);
+  }
+  .status-tile:hover { transform: translateY(-1px); box-shadow: var(--shadow); text-decoration:none; }
+  .status-tile.ok   { border-left-color: var(--ok); }
+  .status-tile.warn { border-left-color: var(--warn); }
+  .status-label { font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:0.06em; color:var(--muted); }
+  .status-value { font-family:"Plus Jakarta Sans",sans-serif; font-size:16px; font-weight:700; color:var(--text); margin:2px 0; }
+  .status-sub   { font-size:10.5px; color:var(--muted-2); }
+
+  /* Ask box */
+  .ask-box { display:grid; grid-template-columns:1fr max-content; gap:8px; margin-bottom:18px; }
+  .ask-box input { padding:14px 18px; font-size:14px; border:1px solid var(--border-2); border-radius:var(--radius-lg); background:var(--surface); color:var(--text); font-family:inherit; }
+  .ask-box input:focus { outline:2px solid var(--accent); border-color:transparent; }
+  .ask-box .btn-primary { padding:14px 24px; font-size:13px; border-radius:var(--radius-lg); }
+
+  /* Today */
+  .today-card { padding: 16px 20px; }
+  .today-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 16px; }
+  .today-stat { display: flex; flex-direction: column; }
+  .today-stat strong { font-family:"Plus Jakarta Sans",sans-serif; font-size:22px; font-weight:700; line-height:1; }
+  .today-stat span { font-size: 11px; color: var(--muted); margin-top: 4px; }
+
+  /* Project grid */
+  .project-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; }
+  .project-tile {
+    display: block;
+    padding: 12px 14px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    text-decoration: none;
+    color: inherit;
+    transition: transform 80ms ease, box-shadow 80ms ease;
+  }
+  .project-tile:hover { transform: translateY(-1px); box-shadow: var(--shadow); text-decoration:none; }
+  .project-name { font-weight: 600; font-size: 13px; margin-bottom: 4px; }
+  .project-stats { display: flex; gap: 12px; font-size: 11px; color: var(--muted); }
+  .project-stats strong { color: var(--text); }
+  .project-sub { font-size: 10px; color: var(--muted-2); margin-top: 4px; }
+
+  /* Two-column split */
+  .dash-split { display: grid; grid-template-columns: 1fr 320px; gap: 14px; margin-top: 14px; }
+
+  /* Nudges */
+  .nudges { list-style: none; padding: 0; margin: 0; }
+  .nudges li { padding: 6px 0; border-bottom: 1px solid var(--border); }
+  .nudges li:last-child { border-bottom: none; }
+  .nudges li a { display: flex; flex-direction: column; gap: 2px; font-size: 12.5px; text-decoration: none; color: var(--text); }
+  .nudges li a:hover { text-decoration: none; }
+  .nudges li a strong { color: var(--accent); }
+  .nudges .empty-line { padding: 8px 0; font-size: 12px; color: var(--muted-2); font-style: italic; }
+
+  /* Quick row */
+  .quick-row { display:grid; grid-template-columns:repeat(4, 1fr); gap:10px; margin-top: 14px; margin-bottom:14px; }
+  .quick-tile {
+    display:block;
+    padding:14px 16px;
+    background:var(--surface);
+    border:1px solid var(--border);
+    border-radius:var(--radius-lg);
+    text-decoration:none;
+    color:inherit;
+    transition:transform 80ms ease, box-shadow 80ms ease;
+  }
+  .quick-tile:hover { transform:translateY(-1px); box-shadow:var(--shadow); text-decoration:none; }
+  .quick-emoji { font-size:22px; color:var(--accent); margin-bottom:6px; }
+  .quick-name { font-size:13px; font-weight:600; }
+  .quick-sub { font-size:11px; color:var(--muted); margin-top:2px; }
+</style>
+{% endblock %}

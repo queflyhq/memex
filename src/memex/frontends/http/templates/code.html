@@ -1,0 +1,162 @@
+{% extends "base.html" %}
+{% block title %}Code{% endblock %}
+{% block content %}
+<h1>Code memory</h1>
+<p class="lede">Sources memex has indexed. Drill into a source for files, symbols, and dead-code candidates. Cross-repo same_as links surface symbols that exist in multiple repos.</p>
+
+<div class="hero">
+  <div class="metric" style="cursor:default;">
+    <div class="metric-val">{{ source_count }}</div>
+    <div class="metric-lbl">sources indexed</div>
+  </div>
+  <div class="metric" style="cursor:default;">
+    <div class="metric-val">{{ file_count }}</div>
+    <div class="metric-lbl">files</div>
+  </div>
+  <div class="metric" style="cursor:default;">
+    <div class="metric-val">{{ symbol_count }}</div>
+    <div class="metric-lbl">symbols</div>
+  </div>
+  <div class="metric" style="cursor:default;">
+    <div class="metric-val">{{ cross_repo_count }}</div>
+    <div class="metric-lbl">cross-repo links</div>
+  </div>
+</div>
+
+{% if not selected_source %}
+  {% if sources %}
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+      <h2 style="margin:0;">Sources grouped by project</h2>
+      <a class="btn-secondary" href="/app/code?action=add">+ Add source</a>
+    </div>
+    {% for group in project_groups %}
+      <section class="card" style="padding:0; margin-bottom:12px;">
+        <div style="padding:12px 16px; border-bottom:1px solid var(--border); display:flex; justify-content:space-between; align-items:center; background:var(--surface-2);">
+          <div>
+            <span class="r-kind kind-project">project</span>
+            <strong style="font-size:13.5px; margin-left:6px;">{{ group.name }}</strong>
+          </div>
+          <span class="r-meta">{{ group.sources | length }} source{{ '' if group.sources|length == 1 else 's' }}</span>
+        </div>
+        {% for s in group.sources %}
+          <div class="result" style="display:grid; grid-template-columns:1fr max-content; gap:12px; align-items:center;">
+            <a href="/app/code/{{ s.id }}" style="text-decoration:none; color:inherit;">
+              <div class="r-row">
+                <span class="r-kind kind-source">source</span>
+                <span class="r-name">{{ s.name }}</span>
+                {% if s.git_remote %}<span class="r-meta">{{ s.git_host }}</span>{% endif %}
+              </div>
+              <div class="r-meta">{{ s.path }}</div>
+              <div class="r-meta">
+                {{ s.indexed_files }} file{{ '' if s.indexed_files == 1 else 's' }} ·
+                {{ s.indexed_symbols }} symbol{{ '' if s.indexed_symbols == 1 else 's' }} ·
+                {% if s.last_indexed_rel %}last indexed {{ s.last_indexed_rel }}{% else %}never indexed{% endif %}
+              </div>
+            </a>
+            <div style="display:flex; gap:6px; align-items:center;">
+              <form method="post" action="/app/code/{{ s.id }}/move-to-project" style="margin:0; display:flex; gap:4px; align-items:center;">
+                <select name="project_id" style="font-size:11px; padding:4px 6px; border:1px solid var(--border-2); border-radius:var(--radius); font-family:inherit;">
+                  <option value="__none__">(unfiled)</option>
+                  {% for p in all_projects %}
+                    <option value="{{ p.id }}" {% if p.id == group.id %}selected{% endif %}>{{ p.name }}</option>
+                  {% endfor %}
+                  <option value="__new__">+ new project…</option>
+                </select>
+                <input name="new_project_name" placeholder="new name" style="font-size:11px; padding:4px 6px; border:1px solid var(--border-2); border-radius:var(--radius); width:90px; font-family:inherit;">
+                <button type="submit" class="btn-secondary" style="font-size:11px;">Move</button>
+              </form>
+              <form method="post" action="/app/code/{{ s.id }}/reindex" style="margin:0;">
+                <button type="submit" class="btn-secondary" style="font-size:11px;">Re-index</button>
+              </form>
+            </div>
+          </div>
+        {% endfor %}
+      </section>
+    {% endfor %}
+  {% else %}
+    <section class="card">
+      <div class="empty">
+        <p>No codebases indexed. Memex won't know about your code symbols until you add a source.</p>
+        <a class="cta" href="/app/code?action=add">Add your first source</a>
+      </div>
+    </section>
+  {% endif %}
+
+  {% if action == 'add' %}
+  <section class="card" style="background:var(--surface-2); border-color:var(--accent-bd);">
+    <h2>Add a code source</h2>
+    <p class="lede" style="margin-top:0;">Memex walks the path, parses each file with a tree-sitter grammar (Python, Go, JS/TS, Java, Rust, Bash, YAML, HCL, Svelte), and builds a typed graph of files and symbols. Idempotent — re-adding the same path returns the existing source.</p>
+    <form method="post" action="/app/code/add" style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+      <input name="path" required placeholder="C:\path\to\repo" style="flex:1; min-width:300px; padding:9px 14px; border:1px solid var(--border-2); border-radius:var(--radius); font-size:13px; font-family:inherit;">
+      <input name="name" placeholder="short name (optional)" style="padding:9px 14px; border:1px solid var(--border-2); border-radius:var(--radius); font-size:13px; font-family:inherit;">
+      <button class="btn-primary" type="submit">Add &amp; index</button>
+      <a class="btn-secondary" href="/app/code">Cancel</a>
+    </form>
+  </section>
+  {% endif %}
+
+{% else %}
+  {# Drill-down view for a single source. #}
+  <div style="display:flex; align-items:center; gap:8px; margin-bottom:14px;">
+    <a class="btn-secondary" href="/app/code">← All sources</a>
+    <span class="r-meta">/</span>
+    <h2 style="margin:0;">{{ selected_source.name }}</h2>
+  </div>
+
+  <div class="hero">
+    <div class="metric" style="cursor:default;">
+      <div class="metric-val">{{ selected_source.indexed_files }}</div>
+      <div class="metric-lbl">files</div>
+    </div>
+    <div class="metric" style="cursor:default;">
+      <div class="metric-val">{{ selected_source.indexed_symbols }}</div>
+      <div class="metric-lbl">symbols</div>
+    </div>
+    <div class="metric" style="cursor:default;">
+      <div class="metric-val">{{ orphan_count }}</div>
+      <div class="metric-lbl">dead-code candidates</div>
+    </div>
+  </div>
+
+  {% if orphans %}
+  <section class="card">
+    <div class="card-head">
+      <h2>Dead-code candidates</h2>
+      <span class="r-meta">no callers + no extends</span>
+    </div>
+    <p class="lede" style="margin:0 0 10px;">Public symbols (no leading <code>_</code>) with zero incoming <code>calls</code> or <code>extends</code> edges. Cross-repo callers aren't considered yet — verify before deleting.</p>
+    <ul style="list-style:none; padding:0; margin:0; max-height:300px; overflow-y:auto;">
+      {% for o in orphans %}
+        <li style="padding:6px 0; border-bottom:1px solid var(--border); font-size:12.5px;">
+          <strong>{{ o.name }}</strong>
+          <span class="r-meta">{{ o.symbol_kind }} · {{ o.file_path }}{% if o.start_line %}:{{ o.start_line }}{% endif %}</span>
+        </li>
+      {% endfor %}
+    </ul>
+  </section>
+  {% endif %}
+
+  <section class="card" style="padding:0;">
+    <div style="padding:14px 16px; border-bottom:1px solid var(--border);">
+      <h2 style="margin:0;">Files</h2>
+    </div>
+    {% if not files %}
+      <div class="empty"><p>No files indexed yet. Try re-indexing this source.</p></div>
+    {% else %}
+      <ul style="list-style:none; padding:0; margin:0; max-height:480px; overflow-y:auto;">
+        {% for f in files %}
+          <li style="padding:0; border-bottom:1px solid var(--border);">
+            <a href="/app/code/file/{{ f.id }}" style="display:grid; grid-template-columns:1fr max-content; gap:12px; padding:8px 16px; text-decoration:none; color:inherit; font-size:12.5px;">
+              <div>
+                <strong>{{ f.name }}</strong>
+                {% if f.path %}<div class="r-meta">{{ f.path }}</div>{% endif %}
+              </div>
+              <span class="r-meta">{{ f.symbol_count }} symbols</span>
+            </a>
+          </li>
+        {% endfor %}
+      </ul>
+    {% endif %}
+  </section>
+{% endif %}
+{% endblock %}

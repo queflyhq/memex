@@ -37,8 +37,8 @@ jobs:
       - name: Lint (ruff)
         run: uv run ruff check .
 
-      - name: Run tests
-        run: uv run pytest -v
+      - name: Run tests with coverage
+        run: uv run pytest -v --cov=src/memex --cov-report=term-missing --cov-fail-under=70
 
       - name: CLI smoke test
         run: |

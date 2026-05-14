@@ -1,0 +1,95 @@
+{% extends "base.html" %}
+{% block title %}Tasks{% endblock %}
+{% block content %}
+<h1>Things to do</h1>
+<p class="lede">Tasks memex tracks for you. Top of the list is what AI thinks you should pick up next.</p>
+
+<div class="metrics-row">
+  <div class="mini-metric"><strong>{{ counts.in_progress or 0 }}</strong><span>in progress</span></div>
+  <div class="mini-metric"><strong>{{ counts.pending or 0 }}</strong><span>pending</span></div>
+  <div class="mini-metric"><strong>{{ counts.completed or 0 }}</strong><span>completed (all time)</span></div>
+  <div style="margin-left:auto;">
+    {% if action != 'create' %}<a class="btn-secondary" href="/app/tasks?action=create">+ Add task</a>{% endif %}
+  </div>
+</div>
+
+{% if action == 'create' %}
+<section class="card" style="background:var(--surface-2); border-color:var(--accent-bd);">
+  <h2>Add a task</h2>
+  <form method="post" action="/app/tasks/create">
+    <label style="font-size:11.5px; color:var(--muted); display:block; margin-bottom:4px;">What needs to happen?</label>
+    <input name="name" required placeholder="e.g. 'Migrate auth from sessions to JWT'" style="padding:8px 12px; border:1px solid var(--border-2); border-radius:var(--radius); margin-bottom:10px; font-size:13px; font-family:inherit; width:100%; display:block;">
+    <label style="font-size:11.5px; color:var(--muted); display:block; margin-bottom:4px;">Notes (optional)</label>
+    <textarea name="description" rows="2" placeholder="Context, links, blockers — anything you want AI to remember when picking this up" style="padding:8px 12px; border:1px solid var(--border-2); border-radius:var(--radius); margin-bottom:10px; font-size:13px; font-family:inherit; width:100%; display:block; resize:vertical;"></textarea>
+    <div style="display:flex; gap:12px; margin-bottom:10px;">
+      <div>
+        <label style="font-size:11.5px; color:var(--muted); display:block; margin-bottom:4px;">Priority</label>
+        <select name="priority" style="padding:6px 10px; border:1px solid var(--border-2); border-radius:var(--radius); font-size:12px; font-family:inherit;">
+          <option value="">—</option>
+          <option value="low">low</option>
+          <option value="medium">medium</option>
+          <option value="high">high</option>
+        </select>
+      </div>
+      <div>
+        <label style="font-size:11.5px; color:var(--muted); display:block; margin-bottom:4px;">Project (optional)</label>
+        <input name="project" placeholder="memex, authfi…" style="padding:6px 10px; border:1px solid var(--border-2); border-radius:var(--radius); font-size:12px; font-family:inherit;">
+      </div>
+    </div>
+    <button class="btn-primary" type="submit">Add task</button>
+    <a class="btn-secondary" href="/app/tasks" style="margin-left:8px;">Cancel</a>
+  </form>
+</section>
+{% endif %}
+
+{% for lane in lanes %}
+{% if lane.tasks %}
+<section class="card" style="padding:0;">
+  <div style="padding:14px 16px; border-bottom:1px solid var(--border); display:flex; justify-content:space-between; align-items:center;">
+    <h2 style="margin:0;">{{ lane.label }}</h2>
+    <span class="r-meta">{{ lane.tasks | length }}</span>
+  </div>
+  {% for t in lane.tasks %}
+    <div class="result" id="{{ t.id }}" style="display:grid; grid-template-columns:1fr max-content; gap:12px; align-items:start;">
+      <div>
+        <div class="r-row">
+          <span class="r-name">{{ t.name }}</span>
+          {% if t.priority %}<span class="pri pri-{{ t.priority }}">{{ t.priority }}</span>{% endif %}
+          {% if t.blocked_by_names %}<span class="r-meta">⛔ blocked by {{ t.blocked_by_names | join(', ') }}</span>{% endif %}
+          {% if t.due_rel %}<span class="r-meta">due {{ t.due_rel }}</span>{% endif %}
+          {% if t.project %}<span class="r-meta">{{ t.project }}</span>{% endif %}
+        </div>
+        {% if t.description %}<div class="r-desc">{{ t.description[:200] }}{% if t.description|length > 200 %}…{% endif %}</div>{% endif %}
+      </div>
+      <div style="display:flex; gap:6px;">
+        {% if t.status != 'completed' %}
+          <form method="post" action="/app/tasks/{{ t.id }}/done">
+            <button type="submit" class="btn-secondary" style="color:#15803d; border-color:#bbf7d0; font-size:11px;">✓ Done</button>
+          </form>
+        {% endif %}
+        <form method="post" action="/app/tasks/{{ t.id }}/delete" onsubmit="return confirm('Delete this task?');">
+          <button type="submit" class="btn-secondary" style="color:#b91c1c; border-color:#fecaca; font-size:11px;">×</button>
+        </form>
+      </div>
+    </div>
+  {% endfor %}
+</section>
+{% endif %}
+{% endfor %}
+
+{% set has_any = lanes | selectattr('tasks') | list %}
+{% if not has_any and action != 'create' %}
+<section class="card">
+  <div class="empty">
+    <p>No tasks yet. Memex picks up tasks from your conversations with Claude Code, or you can add them manually.</p>
+    <a class="cta" href="/app/tasks?action=create">Add your first task</a>
+  </div>
+</section>
+{% endif %}
+
+<style>
+  .metrics-row { display:flex; gap:24px; margin-bottom:18px; padding:0 4px; align-items:center; }
+  .mini-metric { display:flex; flex-direction:column; gap:0; font-size:11px; color:var(--muted); }
+  .mini-metric strong { font-family:"Plus Jakarta Sans", sans-serif; font-size:18px; font-weight:700; color:var(--text); line-height:1.1; }
+</style>
+{% endblock %}

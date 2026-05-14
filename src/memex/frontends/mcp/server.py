@@ -22,6 +22,7 @@ from __future__ import annotations
 import base64
 import logging
 from importlib import resources
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Union
 
 from memex.core.engine import Engine
@@ -47,6 +48,110 @@ if TYPE_CHECKING:
 Backend = Union[Engine, "MemexClient"]
 
 log = logging.getLogger(__name__)
+
+
+def _auto_promote_upstream_result(
+    engine: Any,
+    upstream: str,
+    tool: str,
+    args: dict[str, Any],
+    result: Any,
+) -> None:
+    """Save a successful upstream MCP tool result as a kind=fact node.
+
+    Idempotent on (name, kind, source) — the same upstream call with the
+    same args refreshes the same node instead of duplicating. Lets later
+    recall queries ("what's in the GitHub issue we just opened?") hit a
+    typed concept, not a raw event payload.
+
+    Skip conditions:
+      - $MEMEX_NO_AUTO_PROMOTE truthy (global opt-out)
+      - Result is a non-text payload too large or too opaque to be useful
+        as a node body (binary, deep nested, > 8 KB serialized)
+    """
+    import hashlib as _hash
+    import json as _json
+    import os as _os
+    from memex.core.schema import Source
+
+    if (_os.environ.get("MEMEX_NO_AUTO_PROMOTE") or "").lower() in {"1", "true", "yes"}:
+        return
+
+    # Extract a useful text body — most MCP tools return either
+    # {"content": [{"type": "text", "text": "..."}]} or a JSON-y dict.
+    body_text: str
+    if isinstance(result, dict) and isinstance(result.get("content"), list):
+        parts: list[str] = []
+        for c in result["content"]:
+            if isinstance(c, dict) and c.get("type") == "text":
+                parts.append(str(c.get("text") or ""))
+        body_text = "\n\n".join(p for p in parts if p)
+    elif isinstance(result, str):
+        body_text = result
+    else:
+        try:
+            body_text = _json.dumps(result, ensure_ascii=False, default=str)
+        except Exception:  # noqa: BLE001
+            return
+    if not body_text.strip():
+        return
+    if len(body_text) > 8192:
+        body_text = body_text[:8192] + "…(truncated)"
+
+    # Build a stable name so the same call upserts the same node.
+    arg_hash = _hash.sha1(
+        _json.dumps(args, sort_keys=True, default=str).encode("utf-8")
+    ).hexdigest()[:8]
+    name = f"{upstream}.{tool}#{arg_hash}"
+
+    md = {
+        "from_upstream": upstream,
+        "from_tool": tool,
+        "args": args,
+        "auto_promoted": True,
+    }
+    engine.observe(
+        kind="upstream_result_promoted",
+        actor=Source.agent,
+        payload={"name": name, "len": len(body_text)},
+    )
+    # Use the engine.add() path — it's not idempotent by itself, but the
+    # repeated-name will produce a no-op merge in the DuckDB store's
+    # add_concept (UPSERT keyed by id; since the id is generated here we
+    # need find_by_name_kind_source first to detect existing).
+    existing = engine.find_by_name_kind_source(
+        name=name, kind="fact", source=Source.agent,
+    )
+    if existing is not None:
+        # Refresh: update description + last_confirmed_at via the same
+        # mechanism /remember uses (in-place update preserving id).
+        from datetime import datetime as _dt, timezone as _tz
+        from memex.core.schema import Concept as _Concept
+        new_md = dict(existing.metadata or {})
+        new_md.update(md)
+        engine.semantic.add_concept(
+            _Concept(
+                id=existing.id,
+                name=existing.name,
+                description=body_text,
+                kind=existing.kind,
+                source=existing.source,
+                confidence=existing.confidence,
+                created_at=existing.created_at,
+                last_confirmed_at=_dt.now(_tz.utc),
+                metadata=new_md,
+                verification=existing.verification,
+            )
+        )
+        return
+    engine.add(
+        name=name,
+        description=body_text,
+        kind="fact",
+        source=Source.agent,
+        confidence=0.7,
+        metadata=md,
+    )
 
 
 def _brand_icon() -> Any:
@@ -254,6 +359,600 @@ class MCPServer:
             return render_recall(result)
 
         @mcp.tool()
+        def recall_code(
+            query: str,
+            source_id: str | None = None,
+            symbol_kind: str | None = None,
+            expand_hops: int = 1,
+            limit: int = 20,
+        ) -> dict[str, Any]:
+            """Find typed-graph symbols by name + their neighborhood.
+
+            This is NOT a vector-RAG search. memex returns matched symbols
+            (class/function/method/interface/...) with their defining file,
+            parent class, cross-repo `same_as` siblings, and any decisions/
+            constraints that mention them. Use it BEFORE `recall()` when
+            the question is about a specific identifier in indexed code.
+
+            Pre-condition: at least one source must be registered + indexed.
+            See `memex source add` (CLI) or ask the user to register a repo
+            first if `recall_code` returns no matches and the user expected
+            results.
+
+            WHEN TO CALL:
+              - User asks "where is X defined" / "what calls X" / "what's
+                in <file>" — anything that names a code identifier.
+              - You're about to edit a function and want to see its
+                callers + relevant decisions.
+              - Cross-repo: "JWTClaims is used in 3 services — show all
+                of them" (slice B linker pass surfaces same_as siblings).
+
+            WHEN NOT TO CALL:
+              - User asks about prior decisions / constraints / facts
+                — use plain `recall()` for the concept-memory layer.
+              - User asks "how do I" / "what's the right way" — those
+                are skill / approach questions, use `validate()`.
+              - The query is a free-form NL question — slice A is
+                name-anchored. recall_code with phrase-shaped queries
+                returns weak results; future slices add embedding rank.
+
+            PARAMETERS:
+              query (str): symbol name (exact > prefix > substring) or
+                signature substring.
+              source_id (str, optional): limit to a single registered
+                source by its concept id.
+              symbol_kind (str, optional): filter by symbol kind:
+                class | function | method | interface | struct | enum |
+                type_alias | const | component | resource | manifest.
+              expand_hops (int, default=1): how much neighborhood to
+                surface. 0 = just direct matches; 1 = + defining file +
+                parent class + cross-repo siblings.
+              limit (int, default=20): max number of primary matches.
+
+            RETURNS:
+              {
+                "matches": [<Concept>...],         primary symbols matching
+                "neighborhood": [<Concept>...],    files / parents / siblings
+                "edges": [<Edge>...],              the connections
+                "related_concepts": [<Concept>...] decisions/constraints
+                                                   that mention any matched
+                                                   symbol — the "full picture"
+                                                   surface (architecture
+                                                   decisions, tech-debt notes,
+                                                   user corrections).
+                "query": "<echoed query>",
+                "expand_hops": <int>,
+                "degraded": <bool>,                true when the query ran
+                                                   without vector ranking
+                                                   (slice A always degraded:
+                                                   true; slice A.1 enables it).
+                "degraded_reason": <str|null>
+              }
+
+            EXAMPLE:
+              recall_code(query="RegistryClient")
+              # returns: 1 match (the class), neighborhood (file +
+              #   methods __init__/find_entry/fetch_skill/...), 5+ edges,
+              #   plus any decision concepts mentioning "RegistryClient".
+            """
+            from memex.codebase import recall_code as _recall_code
+
+            try:
+                result = _recall_code(
+                    engine,
+                    query=query,
+                    source_id=source_id,
+                    symbol_kind=symbol_kind,
+                    expand_hops=expand_hops,
+                    limit=limit,
+                )
+            except AttributeError as e:
+                # Older Backend (HTTP MemexClient) without find_by_kind/edges_for.
+                return {
+                    "matches": [],
+                    "neighborhood": [],
+                    "edges": [],
+                    "related_concepts": [],
+                    "query": query,
+                    "expand_hops": expand_hops,
+                    "degraded": True,
+                    "degraded_reason": (
+                        "backend missing codebase-memory primitives: "
+                        f"{e}. Run via in-process engine or upgrade daemon."
+                    ),
+                }
+
+            # Result already carries `degraded` + `degraded_reason` set by
+            # recall_code itself when the embedding provider is unavailable
+            # or vectors are empty. No override here — the no-silent-fallback
+            # rule means whatever recall_code reports is what we forward.
+            return result.to_dict()
+
+        @mcp.tool()
+        def add_code_source(
+            path: str,
+            name: str | None = None,
+            index_now: bool = True,
+        ) -> dict[str, Any]:
+            """Register a codebase as a memex source and (by default) index it.
+
+            After this call, the codebase is queryable via `recall_code()`,
+            `find_code_orphans()`, and `link_cross_repo()`. Pass
+            `index_now=False` if you want to register-then-trigger-later
+            (e.g., during a hosted setup flow where indexing is async).
+
+            WHEN TO CALL:
+              - User points at a directory and says "remember this codebase"
+                / "index this repo" / "add my project to memex".
+              - First-time setup: register every relevant repo so cross-
+                repo recall has multiple sources to walk between.
+
+            PARAMETERS:
+              path (str): absolute path to the repo root. Must exist and be
+                a directory.
+              name (str, optional): display name. Defaults to a slug from
+                the basename + 8-hex of the absolute path (so two clones
+                with the same basename don't collide).
+              index_now (bool, default=True): index immediately. False
+                leaves the source registered without symbols/files.
+
+            RETURNS:
+              {
+                "id": "c_<hex>",
+                "name": "<display name>",
+                "path": "<absolute path>",
+                "indexed": <bool>,
+                "files": <int>,
+                "symbols": <int>,
+                "languages": {"python": 12, "go": 8, ...},
+                "skipped_files": <int>,
+              }
+
+            EXAMPLE:
+              add_code_source(path="/Users/me/project", index_now=True)
+            """
+            from memex.codebase import (
+                add_source as _add_source,
+                index_source as _index_source,
+            )
+            try:
+                src = _add_source(engine, path, name=name)
+            except Exception as e:  # noqa: BLE001
+                return {"error": f"register failed: {e}", "path": path}
+            payload: dict[str, Any] = {
+                "id": src.id,
+                "name": src.name,
+                "path": src.metadata.get("path"),
+                "indexed": False,
+                "files": 0,
+                "symbols": 0,
+                "languages": {},
+                "skipped_files": 0,
+            }
+            if index_now:
+                try:
+                    res = _index_source(engine, src.id)
+                except Exception as e:  # noqa: BLE001
+                    return {**payload, "error": f"index failed: {e}"}
+                payload.update({
+                    "indexed": True,
+                    "files": res.files_indexed,
+                    "symbols": res.symbols_indexed,
+                    "languages": res.languages,
+                    "skipped_files": res.skipped_files,
+                })
+            return payload
+
+        @mcp.tool()
+        def list_code_sources() -> list[dict[str, Any]]:
+            """List every registered codebase source.
+
+            RETURNS:
+              [
+                {
+                  "id": "c_<hex>",
+                  "name": "<display>",
+                  "path": "<abs path>",
+                  "files": <int>,
+                  "symbols": <int>,
+                  "last_indexed_at": "<iso>" | null,
+                },
+                ...
+              ]
+            """
+            from memex.codebase import list_sources as _list_sources
+            sources = _list_sources(engine)
+            return [
+                {
+                    "id": s.id,
+                    "name": s.name,
+                    "path": s.metadata.get("path"),
+                    "files": s.metadata.get("indexed_files", 0),
+                    "symbols": s.metadata.get("indexed_symbols", 0),
+                    "last_indexed_at": s.metadata.get("last_indexed_at"),
+                }
+                for s in sources
+            ]
+
+        @mcp.tool()
+        def reindex_code_source(source_id: str) -> dict[str, Any]:
+            """Drop existing chunks and re-index a registered source from
+            disk. Use this after the codebase has changed (after a git
+            pull, after a feature branch merge, after large edits).
+
+            For single-file updates, prefer the future per-file reindex
+            primitive (see "memex codebase memory stays current" decision)
+            once it lands — this is the full-source path.
+            """
+            from memex.codebase import reindex_source as _reindex_source
+            try:
+                res = _reindex_source(engine, source_id)
+            except Exception as e:  # noqa: BLE001
+                return {"error": str(e), "source_id": source_id}
+            return {
+                "source_id": source_id,
+                "files": res.files_indexed,
+                "symbols": res.symbols_indexed,
+                "languages": res.languages,
+                "skipped_files": res.skipped_files,
+            }
+
+        @mcp.tool()
+        def remove_code_source(source_id: str) -> dict[str, Any]:
+            """Delete a source plus every file + symbol it owns. Cascade
+            deletion — the file and symbol concepts go away with their
+            edges. Use sparingly; for refresh prefer `reindex_code_source`.
+            """
+            from memex.codebase import remove_source as _remove_source
+            try:
+                deleted = _remove_source(engine, source_id)
+            except Exception as e:  # noqa: BLE001
+                return {"error": str(e), "source_id": source_id}
+            return {"source_id": source_id, "deleted_concepts": deleted}
+
+        @mcp.tool()
+        def link_cross_repo_symbols(
+            source_ids: list[str] | None = None,
+            threshold: float = 0.7,
+            dry_run: bool = False,
+        ) -> dict[str, Any]:
+            """Run the cross-repo linker — create `same_as` edges between
+            symbols that are likely the same logical concept across
+            registered sources.
+
+            This is what makes end-to-end cross-service traversal possible.
+            After running it, `recall_code("JWTClaims")` returns the
+            symbol matched in every source it appears, fused via same_as,
+            so neighborhood walks cross repository boundaries seamlessly.
+
+            Slice B-α heuristic: name + symbol_kind + Jaccard signature
+            similarity. Names < 4 chars or in the generic-noise list
+            (parse, init, run, ...) are excluded — cross-linking those
+            across services is almost always wrong. API-call and
+            proto-shared-definition heuristics are queued for slice B-β.
+
+            WHEN TO CALL:
+              - After indexing 2+ sources for the first time.
+              - After a major refactor that renamed types, so new same_as
+                edges reflect the new naming.
+              - When the user asks "find this concept across all my repos."
+
+            PARAMETERS:
+              source_ids (list[str], optional): scope to a subset of
+                registered sources. Defaults to all.
+              threshold (float, default=0.7): minimum signature Jaccard
+                similarity to create the edge. Lower = more recall, more
+                false positives.
+              dry_run (bool, default=False): compute pairs without writing
+                edges. Returns the same shape with edges_created=0.
+
+            RETURNS:
+              {
+                "pairs": [
+                  {"a_id": "c_x", "b_id": "c_y",
+                   "a_name": "JWTClaims", "b_name": "JWTClaims",
+                   "a_source": "c_src1", "b_source": "c_src2",
+                   "similarity": 0.85, "heuristic": "name+kind+sig"},
+                  ...
+                ],
+                "edges_created": <int>,
+                "sources_considered": <int>,
+                "candidates_examined": <int>,
+                "skipped_generic": <int>,
+                "skipped_short_name": <int>,
+                "dry_run": <bool>,
+              }
+            """
+            from memex.codebase import link_cross_repo as _link_cross_repo
+            try:
+                res = _link_cross_repo(
+                    engine,
+                    source_ids=source_ids,
+                    threshold=threshold,
+                    dry_run=dry_run,
+                )
+            except Exception as e:  # noqa: BLE001
+                return {"error": str(e)}
+            return {
+                "pairs": [
+                    {
+                        "a_id": p.a_id, "b_id": p.b_id,
+                        "a_name": p.a_name, "b_name": p.b_name,
+                        "a_source": p.a_source, "b_source": p.b_source,
+                        "similarity": p.similarity,
+                        "heuristic": p.heuristic,
+                    }
+                    for p in res.pairs
+                ],
+                "edges_created": 0 if dry_run else len(res.pairs),
+                "sources_considered": res.sources_considered,
+                "candidates_examined": res.candidates_examined,
+                "skipped_generic": res.skipped_generic,
+                "skipped_short_name": res.skipped_short_name,
+                "dry_run": dry_run,
+            }
+
+        @mcp.tool()
+        def should_approve_tool(
+            tool_name: str,
+            tool_input: dict[str, Any] | None = None,
+        ) -> dict[str, Any]:
+            """Layer-4 enforcement check. Consults stored approval
+            policies (and AFK mode + hard-deny) to decide whether a
+            given tool call should be auto-approved, auto-denied, or
+            asked of the user.
+
+            Use this BEFORE executing a sensitive tool when the AI
+            wants to know "would the user have already authorized
+            this?" or to surface to the user "memex would block this."
+
+            RETURNS:
+              {
+                "decision": "approve" | "deny" | "ask",
+                "policy_id": "<concept id of the matched policy, or
+                              'builtin:hard_deny' for built-in patterns,
+                              or '' when ask>",
+                "reason": "<short string for surfacing to user/LLM>",
+              }
+            """
+            from memex.enforcement import should_approve as _should_approve
+            try:
+                m = _should_approve(
+                    engine, tool_name=tool_name,
+                    tool_input=tool_input or {},
+                )
+            except Exception as e:  # noqa: BLE001
+                return {"decision": "ask", "policy_id": "", "reason": f"error: {e}"}
+            return m.to_dict()
+
+        @mcp.tool()
+        def enable_afk_mode(
+            duration_hours: float = 4.0,
+            note: str = "",
+        ) -> dict[str, Any]:
+            """Flip memex into AFK mode for `duration_hours`. Auto-approves
+            every tool call (except hard-deny) and audit-logs every
+            decision. Use when the user explicitly says "work non-stop
+            on the plan, I'll review when I'm back."
+
+            Hard-deny patterns are NEVER bypassed — `rm -rf /`,
+            force-push to main, DROP DATABASE, kubectl delete on
+            production, --no-verify commits — all still rejected.
+
+            RETURNS:
+              {"id": "<flag id>", "expires_at": "<iso>", "note": "...",
+               "duration_hours": <float>}
+            """
+            from memex.enforcement import enable_afk_mode as _enable_afk
+            flag = _enable_afk(engine, duration_hours=duration_hours, note=note)
+            return {
+                "id": flag.id,
+                "expires_at": flag.metadata.get("expires_at"),
+                "note": flag.metadata.get("note"),
+                "duration_hours": flag.metadata.get("duration_hours"),
+            }
+
+        @mcp.tool()
+        def disable_afk_mode() -> dict[str, Any]:
+            """Turn off AFK mode. Returns {"disabled": True} when AFK was
+            active, {"disabled": False} when it wasn't."""
+            from memex.enforcement import disable_afk_mode as _disable_afk
+            return {"disabled": _disable_afk(engine)}
+
+        @mcp.tool()
+        def afk_status() -> dict[str, Any] | None:
+            """Return AFK mode status — None when off, or {id, started_at,
+            expires_at, note, duration_hours} when active."""
+            from memex.enforcement import afk_status as _afk_status
+            return _afk_status(engine)
+
+        @mcp.tool()
+        def list_secrets() -> list[dict[str, Any]]:
+            """List every secret in the OS-keychain-backed vault.
+
+            NEVER returns values — only the index of registered secrets
+            with their audit metadata. Use this when the user asks
+            "what secrets does memex have for me" / "is there a token
+            for service X already configured."
+
+            RETURNS:
+              [
+                {
+                  "handle": "secret://provider/name",
+                  "provider": "...",
+                  "name": "...",
+                  "created_at": "<iso>",
+                  "last_resolved_at": "<iso>" | null,
+                  "last_resolved_by": "<actor>" | null,
+                },
+                ...
+              ]
+
+            The literal secret VALUES are never accessible via MCP — that
+            is the whole point of the vault. Use `memex secret get` from
+            the CLI to retrieve values for human use, or configure
+            upstream auth via `token_memex: secret://...` to let memex
+            resolve at the boundary.
+            """
+            from memex.secrets import SecretsStore
+            from memex.config import get_settings
+
+            store = SecretsStore(
+                Path(str(get_settings().data_dir)) / "secrets"
+            )
+            return [
+                {
+                    "handle": f"secret://{r.provider}/{r.name}",
+                    "provider": r.provider,
+                    "name": r.name,
+                    "created_at": r.created_at,
+                    "last_resolved_at": r.last_resolved_at,
+                    "last_resolved_by": r.last_resolved_by,
+                }
+                for r in store.list()
+            ]
+
+        @mcp.tool()
+        def redact_secrets(text: str, store: bool = True) -> dict[str, Any]:
+            """Scan `text` for known secret patterns (API keys, tokens,
+            JWTs, PEM blocks) and replace each match with a
+            `secret://provider/name` handle. Optionally moves detected
+            values into the vault.
+
+            Use this BEFORE persisting any text into memory that may
+            contain secrets — log excerpts, error traces, transcripts.
+            The whole point: literal secret values must not enter the
+            concept graph or episodic stream.
+
+            PARAMETERS:
+              text (str): the text to scan + redact.
+              store (bool, default=True): when True, detected values
+                land in the OS keychain and the redacted text references
+                them via `secret://` handles. When False, the function
+                still returns redacted output but the events list is
+                empty (preview-only — handle text just shows the
+                pattern name).
+
+            RETURNS:
+              {
+                "redacted_text": "<text with handles in place of values>",
+                "redactions": [
+                  {"pattern_name": "github-pat", "handle":
+                   "secret://github/auto-abc123", "severity": "high",
+                   "span": [start, end]}
+                  ...
+                ],
+                "changed": <bool>,
+              }
+
+            Patterns covered: AWS access keys, OpenAI API keys,
+            Anthropic API keys, GitHub PATs, Slack tokens, Stripe keys,
+            JWTs, Bearer-header tokens, PEM private keys.
+            """
+            from memex.secrets import SecretsStore, redact
+            from memex.config import get_settings
+
+            secrets_store = SecretsStore(
+                Path(str(get_settings().data_dir)) / "secrets"
+            )
+            if not store:
+                # Preview mode — run regex-only scan without writing.
+                from memex.secrets.redact import _DEFAULT_PATTERNS  # internal
+                events = []
+                redacted = text
+                for pat in _DEFAULT_PATTERNS:
+                    redacted = pat.pattern.sub(
+                        f"<<{pat.name}>>", redacted
+                    )
+                    events.extend(
+                        {"pattern_name": pat.name, "severity": pat.severity}
+                        for _ in pat.pattern.finditer(text)
+                    )
+                return {
+                    "redacted_text": redacted,
+                    "redactions": events,
+                    "changed": bool(events),
+                }
+            result = redact(text, secrets_store)
+            return {
+                "redacted_text": result.redacted_text,
+                "redactions": [
+                    {
+                        "pattern_name": e.pattern_name,
+                        "handle": e.handle,
+                        "severity": e.severity,
+                        "span": list(e.span),
+                    }
+                    for e in result.events
+                ],
+                "changed": result.changed,
+            }
+
+        @mcp.tool()
+        def find_code_orphans(
+            source_id: str | None = None,
+            include_private: bool = False,
+        ) -> dict[str, Any]:
+            """Symbols with zero incoming `calls` / `extends` edges —
+            provably-unreachable code within the indexed corpus.
+
+            This is the typed-graph differentiator vs. fuzzy/RAG search:
+            "no callers" is a graph predicate that vector similarity has
+            no way to express. Use the result to surface dead-code
+            candidates for cleanup.
+
+            Caveat: cross-repo callers are NOT considered until slice B's
+            `same_as` linker runs. A symbol defined in repo A and called
+            only in repo B will appear as orphan in A until the linker
+            stitches them. Until then, treat orphan results as
+            "unreachable WITHIN this source" not "globally dead."
+
+            PARAMETERS:
+              source_id (str, optional): scope to one registered source.
+              include_private (bool, default=False): include `_`-prefixed
+                symbols (typically excluded as private internals).
+
+            RETURNS:
+              {
+                "orphans": [{name, kind, language, file, line_start,
+                             line_end, id} ...],
+                "count": <int>,
+                "scope": "single-source" | "all-sources",
+              }
+            """
+            from memex.codebase import find_orphans as _find_orphans
+
+            try:
+                orphans = _find_orphans(
+                    engine,
+                    source_id=source_id,
+                    include_private=include_private,
+                )
+            except AttributeError as e:
+                return {
+                    "orphans": [],
+                    "count": 0,
+                    "scope": "error",
+                    "error": str(e),
+                }
+            return {
+                "orphans": [
+                    {
+                        "id": c.id,
+                        "name": c.name,
+                        "kind": c.metadata.get("symbol_kind", "?"),
+                        "language": c.metadata.get("language"),
+                        "file": c.metadata.get("rel_path"),
+                        "line_start": c.metadata.get("start_line"),
+                        "line_end": c.metadata.get("end_line"),
+                    }
+                    for c in orphans
+                ],
+                "count": len(orphans),
+                "scope": "single-source" if source_id else "all-sources",
+            }
+
+        @mcp.tool()
         def add_node(
             name: str,
             description: str = "",
@@ -452,6 +1151,196 @@ class MCPServer:
                 source=Source(source),
             )
             return {"status": "ok"}
+
+        @mcp.tool()
+        def bulk_graph(
+            nodes: list[dict[str, Any]],
+            edges: list[dict[str, str]] | None = None,
+            source: str = "agent",
+        ) -> dict[str, Any]:
+            """Build a connected subgraph in one call. The cognitive-workflow primitive.
+
+            One bulk_graph call replaces the round-trip dance of:
+              add_node → wait → add_node → wait → link → wait → link → wait …
+
+            Nodes can carry a `local_id` (any string starting with `$`, e.g.
+            `"$proj"`) that subsequent nodes' `project_id` / `blocked_by`
+            and ALL edge `from` / `to` fields can reference within the same
+            call. The local refs resolve to real `c_<hex>` ids inside the
+            tool — the AI never has to juggle ids manually.
+
+            WHEN TO CALL:
+              - Decomposing a goal into a project + tasks + dependencies
+                in one go
+              - Capturing several related concepts (decisions, constraints,
+                facts) that mention each other
+              - Importing a structured outline (skill bundle, design doc)
+                into memex graph form
+              - Any time you'd otherwise call `add_node` 3+ times back to back
+
+            WHEN NOT TO CALL:
+              - For one isolated node — `add_node` is simpler
+              - For edges between concepts you haven't created (use `link`)
+
+            PARAMETERS:
+              nodes (list[dict]): each item is a node spec. Required field
+                is `name` (or `title` for tasks). Common fields:
+                  local_id    — `"$xxx"` to let edges/siblings reference it
+                  name        — concept name (or title for kind=task)
+                  description — body
+                  kind        — fact|decision|constraint|pattern|person|
+                                opinion|question|rejected|approach|module|
+                                endpoint|task|project (default: fact)
+                  source      — per-node override; falls back to top-level
+                  confidence  — 0.0–1.0 (concept nodes; default 1.0)
+                  verification — falsifiability primitive (concept nodes)
+                For kind="task" specifically:
+                  title       — alias for name
+                  status      — pending|in_progress|completed|blocked|cancelled
+                  priority    — p0|p1|p2|p3
+                  due         — ISO date or natural string
+                  project_id  — local_id (`"$proj"`) or real `c_<hex>`
+                  blocked_by  — list of local_ids or real ids
+                  owner       — free-form string
+
+              edges (list[dict], optional): each item is an edge spec:
+                  from  — local_id or real id (required)
+                  to    — local_id or real id (required)
+                  kind  — relates_to|depends_on|implements|supersedes|
+                          conflicts_with|motivated_by|rejected_due_to|
+                          same_as|calls|blocks|part_of|spawned_from
+                          (default: relates_to)
+
+              source (str, default="agent"): top-level actor; per-node and
+                per-edge specs can override.
+
+            RETURNS:
+              {
+                "nodes": {"$proj": "c_abc123", "$task1": "c_def456", ...},
+                "all_node_ids": ["c_abc123", "c_def456", ...],
+                "edges_created": <int>,
+                "errors": [{"phase": "node|edge", "spec": "...", "error": "..."}],
+              }
+              Partial-success semantics: a failing node or edge is logged
+              into `errors` but does not abort the rest of the call. Loud,
+              not silent — count `errors` to gate downstream logic.
+
+            EXAMPLE:
+              bulk_graph(
+                nodes=[
+                  {"local_id": "$proj", "name": "v0.7 push",
+                   "kind": "project",
+                   "description": "Codebase memory + secrets + desktop"},
+                  {"local_id": "$t1", "kind": "task",
+                   "title": "Source primitive + memex source CLI",
+                   "priority": "p1", "project_id": "$proj"},
+                  {"local_id": "$t2", "kind": "task",
+                   "title": "Tree-sitter chunker",
+                   "priority": "p1", "project_id": "$proj",
+                   "blocked_by": ["$t1"]},
+                ],
+                edges=[
+                  {"from": "$proj", "to": "c_existingDecisionId",
+                   "kind": "implements"},
+                ],
+              )
+            """
+            edges = edges or []
+            local_to_real: dict[str, str] = {}
+            created: list[dict[str, str]] = []
+            errors: list[dict[str, str]] = []
+
+            def _resolve(ref: str | None) -> str | None:
+                if ref is None:
+                    return None
+                return local_to_real.get(ref, ref)
+
+            # Pass 1: create nodes (and tasks). Local ids resolved as we go,
+            # so a later task can reference an earlier project's local_id.
+            for spec in nodes:
+                try:
+                    local_id = spec.get("local_id")
+                    kind_str = spec.get("kind", "fact")
+                    node_source = spec.get("source", source)
+
+                    if kind_str == "task":
+                        project_id = _resolve(spec.get("project_id"))
+                        blocked_refs = spec.get("blocked_by") or []
+                        blocked_real = [_resolve(b) for b in blocked_refs if b]
+                        c = engine.add_task(
+                            title=spec.get("title") or spec.get("name", ""),
+                            description=spec.get("description", ""),
+                            status=spec.get("status", "pending"),
+                            priority=spec.get("priority", "p2"),
+                            due=spec.get("due"),
+                            project_id=project_id,
+                            blocked_by=[b for b in blocked_real if b] or None,
+                            owner=spec.get("owner"),
+                        )
+                        display_name = spec.get("title") or spec.get("name", "")
+                    else:
+                        c = engine.add(
+                            name=spec.get("name", ""),
+                            description=spec.get("description", ""),
+                            kind=NodeKind(kind_str),
+                            source=Source(node_source),
+                            confidence=spec.get("confidence", 1.0),
+                            verification=spec.get("verification"),
+                        )
+                        display_name = spec.get("name", "")
+
+                    if local_id:
+                        local_to_real[local_id] = c.id
+                    created.append(
+                        {"local_id": local_id or "", "id": c.id, "name": display_name}
+                    )
+                except Exception as e:  # noqa: BLE001
+                    log.warning("bulk_graph node spec failed: %r → %s", spec, e)
+                    errors.append(
+                        {
+                            "phase": "node",
+                            "spec": str(spec)[:200],
+                            "error": str(e),
+                        }
+                    )
+
+            # Pass 2: create edges. Local refs and real ids both work.
+            edges_created = 0
+            for spec in edges:
+                try:
+                    from_id = _resolve(spec.get("from"))
+                    to_id = _resolve(spec.get("to"))
+                    if not from_id or not to_id:
+                        raise ValueError(
+                            f"edge spec missing from/to: {spec!r}"
+                        )
+                    edge_kind = EdgeKind(spec.get("kind", "relates_to"))
+                    edge_source = spec.get("source", source)
+                    engine.link(
+                        from_id=from_id,
+                        to_id=to_id,
+                        kind=edge_kind,
+                        source=Source(edge_source),
+                    )
+                    edges_created += 1
+                except Exception as e:  # noqa: BLE001
+                    log.warning("bulk_graph edge spec failed: %r → %s", spec, e)
+                    errors.append(
+                        {
+                            "phase": "edge",
+                            "spec": str(spec)[:200],
+                            "error": str(e),
+                        }
+                    )
+
+            return {
+                "nodes": {
+                    n["local_id"]: n["id"] for n in created if n["local_id"]
+                },
+                "all_node_ids": [n["id"] for n in created],
+                "edges_created": edges_created,
+                "errors": errors,
+            }
 
         @mcp.tool()
         def observe(
@@ -1059,6 +1948,22 @@ class MCPServer:
                         "error": error,
                     },
                 )
+                # Auto-promote: when a successful upstream tool returns
+                # textual content small enough to be useful, save it as a
+                # kind=fact node (idempotent on a stable name derived from
+                # the upstream + tool + args hash). This is what makes
+                # "what did github tell us about this issue" answerable
+                # via recall later, not just via the raw episodic stream.
+                # Opt-out per upstream via metadata.no_auto_promote in the
+                # upstream config (future), or globally via
+                # MEMEX_NO_AUTO_PROMOTE=1.
+                if ok:
+                    try:
+                        _auto_promote_upstream_result(
+                            engine, upstream, tool, args, result_payload,
+                        )
+                    except Exception as e:  # noqa: BLE001
+                        log.debug("auto-promote skipped: %s", e)
                 if not ok:
                     return {"ok": False, "error": error}
                 return {"ok": True, "result": result_payload}
@@ -1219,5 +2124,12 @@ def run_stdio_via_daemon(auto_spawn: bool = True) -> None:
             f"memex daemon not reachable at {url}. "
             f"{'Check MEMEX_DAEMON_URL / MEMEX_AUTH_TOKEN.' if settings.daemon_url else 'Start it with: memex daemon'}"
         )
-    client = MemexClient(base_url=url, auth_token=settings.auth_token)
+    # Auth token resolution: env var first (MEMEX_AUTH_TOKEN via pydantic
+    # Settings), then fall back to <data_dir>/daemon.token written by the
+    # daemon on first run. Without the disk fallback every MCP write
+    # 401s when the client was spawned without the env var (e.g. by
+    # Claude Code or the Wails desktop). See runtime_state.read_auth_token.
+    from memex.runtime_state import read_auth_token
+    auth_token = settings.auth_token or read_auth_token(settings)
+    client = MemexClient(base_url=url, auth_token=auth_token)
     MCPServer(client).serve_stdio()

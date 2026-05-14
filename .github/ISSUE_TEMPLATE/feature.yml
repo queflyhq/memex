@@ -1,0 +1,42 @@
+name: Feature request
+description: Propose a new capability or a change to existing behavior.
+title: "[feat] "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What's the underlying friction this would relieve? Concrete is better than abstract.
+      placeholder: When I onboard a new repo, I have to re-install the using-memex skill manually every time.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposed
+    attributes:
+      label: Proposed solution
+      description: What you'd like memex to do. Sketch the API / CLI / config shape if you have one in mind.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Workarounds you've tried, and why they fall short.
+
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope hints
+      description: |
+        Helps us route this. If you know which subsystem this lands in (engine / retrieval / skills / upstreams / frontends / desktop), say so.
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Pre-flight
+      options:
+        - label: I searched existing issues and didn't find a duplicate.
+          required: true

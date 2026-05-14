@@ -79,6 +79,19 @@ CREATE TABLE IF NOT EXISTS concept_history (
     changed_at TIMESTAMPTZ NOT NULL,
     PRIMARY KEY (id, version)
 );
+
+-- Tombstones: concepts deleted by cleanup or by user.  The full blob is
+-- preserved so a user can restore it within N days. Without this, the
+-- forgetting pass is destructive — important-but-decayed concepts vanish
+-- silently. With it, "show me what got deleted last week" + one-click
+-- restore become real affordances.
+CREATE TABLE IF NOT EXISTS concept_tombstones (
+    id           TEXT PRIMARY KEY,
+    concept_blob JSON NOT NULL,
+    deleted_at   TIMESTAMPTZ NOT NULL,
+    reason       TEXT,
+    restored_at  TIMESTAMPTZ
+);
 """
 
 
@@ -111,15 +124,20 @@ def open_duckdb(path: Path, *, vector_dim: int = 384) -> duckdb.DuckDBPyConnecti
         """
     )
 
-    # HNSW index on embedding column. WITH metric=cosine matches our existing
-    # cosine-similarity ranking. Idempotent via IF NOT EXISTS.
+    # HNSW index — DISABLED below ~50k vectors. The VSS extension's HNSW
+    # implementation does NOT support the upsert path cleanly: INSERT … ON
+    # CONFLICT DO UPDATE feeds two entries for the same key into the HNSW
+    # graph, fails with "Duplicate keys not allowed in high-level
+    # wrappers", and INVALIDATES THE WHOLE DATABASE FILE (we hit this
+    # during bulk-indexing and lost ~1,370 concepts of work). Linear-scan
+    # via array_cosine_distance is fast enough up to ~50k vectors. Past
+    # that threshold, run `memex maintenance build-hnsw` (which DELETEs
+    # before re-INSERTing) to enable HNSW. Drop any existing index too so
+    # a previously-built bad HNSW doesn't keep crashing writes.
     try:
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS vectors_hnsw "
-            "ON vectors USING HNSW (embedding) WITH (metric = 'cosine');"
-        )
-    except duckdb.Error as e:
-        log.warning("HNSW index creation skipped: %s", e)
+        conn.execute("DROP INDEX IF EXISTS vectors_hnsw;")
+    except Exception as e:  # noqa: BLE001
+        log.warning("DROP INDEX vectors_hnsw skipped: %s", e)
 
     return conn
 
@@ -140,6 +158,40 @@ class DuckDBSemanticStore:
 
     def add_concept(self, c: Concept) -> str:
         with self._lock:
+            # Identity-aware collision retry. Branded short ids (`mx_<7 hex>`)
+            # have only 268M values; birthday-collision becomes observable at
+            # ~16K concepts. The ON CONFLICT DO UPDATE below would silently
+            # overwrite a *different* concept with the same id. Detect that
+            # case and mint a fresh id before insert.
+            #
+            # We do NOT retry when the existing row has the SAME (name, kind,
+            # source) — that's a legitimate update path used by /remember
+            # and concept_history versioning.
+            from memex.core.schema import _new_id as _mint_id
+            for _attempt in range(5):
+                row = self.conn.execute(
+                    "SELECT name, kind, source FROM concepts WHERE id = ?",
+                    [c.id],
+                ).fetchone()
+                if row is None:
+                    break  # id is free
+                ex_name, ex_kind, ex_source = row
+                k_val = c.kind.value if hasattr(c.kind, "value") else str(c.kind)
+                s_val = c.source.value if hasattr(c.source, "value") else str(c.source)
+                if ex_name == c.name and ex_kind == k_val and ex_source == s_val:
+                    break  # same identity, this is an update — proceed
+                # Different concept, same id: collision. Mint a new id.
+                log.info(
+                    "id collision on %s (existing: %s/%s/%s, new: %s/%s/%s) — minting fresh",
+                    c.id, ex_name, ex_kind, ex_source, c.name, k_val, s_val,
+                )
+                c = c.model_copy(update={"id": _mint_id()})
+            else:
+                raise RuntimeError(
+                    "id collision retry exhausted after 5 attempts — id space "
+                    "likely too full; increase _new_id entropy or run cleanup"
+                )
+
             # Capture previous snapshot for versioning. Single round-trip:
             # SELECT existing + max(version), INSERT into history if found.
             existing = self.conn.execute(
@@ -248,6 +300,74 @@ class DuckDBSemanticStore:
         with self._lock:
             rows = self.conn.execute("SELECT * FROM concepts").fetchall()
         return [_row_to_concept(r) for r in rows]
+
+    def find_by_kind(self, kind: NodeKind) -> list[Concept]:
+        """All concepts of a given kind. Used by codebase memory to walk
+        sources / files / symbols without scanning the whole table."""
+        with self._lock:
+            rows = self.conn.execute(
+                "SELECT * FROM concepts WHERE kind = ?", [kind.value]
+            ).fetchall()
+        return [_row_to_concept(r) for r in rows]
+
+    def find_by_name_kind_source(
+        self,
+        name: str,
+        kind: NodeKind | None,
+        source: "Source | None",
+    ) -> Concept | None:
+        """Idempotency lookup for OMP §4.2 `remember`. Triple uniqueness:
+        when (name, kind, source) all match, the existing concept is
+        returned so `remember` can refresh-confirm instead of duplicating.
+        """
+        sql = "SELECT * FROM concepts WHERE name = ?"
+        params: list[Any] = [name]
+        if kind is not None:
+            sql += " AND kind = ?"
+            params.append(kind.value if hasattr(kind, "value") else str(kind))
+        if source is not None:
+            sql += " AND source = ?"
+            params.append(source.value if hasattr(source, "value") else str(source))
+        sql += " LIMIT 1"
+        with self._lock:
+            row = self.conn.execute(sql, params).fetchone()
+        return _row_to_concept(row) if row else None
+
+    def edges_for(self, concept_id: str) -> list[Edge]:
+        """Every edge touching a node — outgoing + incoming. Single hop."""
+        with self._lock:
+            rows = self.conn.execute(
+                """
+                SELECT from_id, to_id, kind, source, confidence,
+                       created_at, last_confirmed_at, metadata
+                FROM edges
+                WHERE from_id = ? OR to_id = ?
+                """,
+                [concept_id, concept_id],
+            ).fetchall()
+        return [_row_to_edge(r) for r in rows]
+
+    def delete_concept(self, concept_id: str) -> bool:
+        """Hard-delete a concept and every edge touching it. Returns True
+        when something was removed. Used by codebase memory's reindex
+        path; callers that want soft-delete should not use this."""
+        with self._lock:
+            existing = self.conn.execute(
+                "SELECT 1 FROM concepts WHERE id = ?", [concept_id]
+            ).fetchone()
+            if existing is None:
+                return False
+            self.conn.execute(
+                "DELETE FROM edges WHERE from_id = ? OR to_id = ?",
+                [concept_id, concept_id],
+            )
+            self.conn.execute(
+                "DELETE FROM concept_history WHERE id = ?", [concept_id]
+            )
+            self.conn.execute(
+                "DELETE FROM concepts WHERE id = ?", [concept_id]
+            )
+        return True
 
     def neighbors(
         self,
@@ -396,6 +516,51 @@ class DuckDBEpisodicStore:
     def count(self) -> int:
         with self._lock:
             return int(self.conn.execute("SELECT count(*) FROM events").fetchone()[0])
+
+    def prune_older_than(
+        self,
+        cutoff_iso: str,
+        *,
+        keep_kinds: list[str] | None = None,
+        keep_minimum: int = 1000,
+    ) -> int:
+        """Delete events older than the ISO timestamp cutoff. Returns count
+        deleted.
+
+        Safety:
+          - `keep_kinds` rows are never deleted regardless of age (e.g.
+            preserve `consolidation_run`, `pattern_promoted`,
+            `confidence_calibrated` — they're the audit trail).
+          - At least `keep_minimum` most-recent events are always kept,
+            even if they fall under the cutoff. Avoids accidentally
+            wiping the entire event log on a bad cutoff.
+        """
+        with self._lock:
+            n_total = int(self.conn.execute(
+                "SELECT count(*) FROM events"
+            ).fetchone()[0])
+            if n_total <= keep_minimum:
+                return 0
+            params: list[object] = [cutoff_iso]
+            sql = "DELETE FROM events WHERE timestamp < ?"
+            if keep_kinds:
+                placeholders = ",".join(["?"] * len(keep_kinds))
+                sql += f" AND kind NOT IN ({placeholders})"
+                params.extend(keep_kinds)
+            # Final safety: don't delete the most-recent keep_minimum events.
+            sql += (
+                " AND id NOT IN ("
+                f"SELECT id FROM events ORDER BY timestamp DESC LIMIT {keep_minimum}"
+                ")"
+            )
+            before = int(self.conn.execute(
+                "SELECT count(*) FROM events"
+            ).fetchone()[0])
+            self.conn.execute(sql, params)
+            after = int(self.conn.execute(
+                "SELECT count(*) FROM events"
+            ).fetchone()[0])
+            return before - after
 
     def close(self) -> None:
         pass

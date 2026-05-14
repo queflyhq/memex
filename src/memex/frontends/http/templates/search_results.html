@@ -1,0 +1,29 @@
+{# Partial — rendered by /app/search/results, swapped into #results-pane via htmx. #}
+{% if error %}
+  <div class="error">{{ error }}</div>
+{% endif %}
+
+{% if not results %}
+  <div class="empty">
+    <p>{% if stale %}Nothing stale. Memex's memory is fresh.{% elif query %}Nothing matched "<em>{{ query }}</em>". Try fewer or different words.{% else %}No items yet.{% endif %}</p>
+    {% if not stale %}<a class="cta" href="/app/search?action=create">Tell memex something</a>{% endif %}
+  </div>
+{% else %}
+  <div style="padding:10px 16px; font-size:11.5px; color:var(--muted); border-bottom:1px solid var(--border); display:flex; justify-content:space-between;">
+    <span>{{ results | length }} {% if stale %}stale {% endif %}result{{ '' if results|length == 1 else 's' }}</span>
+    {% if elapsed_ms is defined %}<span class="r-meta">{{ elapsed_ms }} ms</span>{% endif %}
+  </div>
+  {% for r in results %}
+    <a class="result {% if selected and selected.id == r.id %}selected{% endif %}" href="/app/search/{{ r.id }}{% if query %}?q={{ query }}{% endif %}{% if kind %}{% if query %}&{% else %}?{% endif %}kind={{ kind }}{% endif %}">
+      <div class="r-row">
+        <span class="r-kind kind-{{ r.kind }}">{{ r.kind | replace('_',' ') }}</span>
+        <span class="r-name">{{ r.name }}</span>
+      </div>
+      {% if r.description %}<div class="r-desc">{{ r.description[:160] }}{% if r.description|length > 160 %}…{% endif %}</div>{% endif %}
+      <div class="r-meta">
+        {% if r.score is defined %}<span style="color:var(--accent); font-weight:600;">match {{ (r.score * 100) | int }}%</span>{% endif %}
+        {% if r.rel_time %}<span>{{ r.rel_time }}</span>{% endif %}
+      </div>
+    </a>
+  {% endfor %}
+{% endif %}

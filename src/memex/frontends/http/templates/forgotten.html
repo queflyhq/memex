@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block title %}Forgotten{% endblock %}
+{% block content %}
+<div style="display:flex; align-items:center; gap:8px; margin-bottom:10px;">
+  <a class="btn-secondary" href="/app/system">← System</a>
+</div>
+<h1>Forgotten concepts</h1>
+<p class="lede">Concepts the cleanup pass tombstoned. They're not in active memory anymore, but the blob is preserved here for review and one-click restore. Tombstones persist indefinitely (no auto-pruning).</p>
+
+{% if not items %}
+<section class="card">
+  <div class="empty">
+    <p>Nothing tombstoned. The cleanup pass either hasn't run, or there's been nothing stale enough to forget.</p>
+  </div>
+</section>
+{% else %}
+<section class="card" style="padding:0;">
+  <div style="padding:10px 16px; font-size:11.5px; color:var(--muted); border-bottom:1px solid var(--border);">
+    {{ items | length }} tombstoned · click Restore to bring one back
+  </div>
+  {% for item in items %}
+    <div class="result" style="display:grid; grid-template-columns:1fr max-content; gap:12px; align-items:start; {% if item.restored %}opacity:0.5;{% endif %}">
+      <div>
+        <div class="r-row">
+          <span class="r-kind kind-{{ item.kind }}">{{ item.kind | replace('_',' ') }}</span>
+          <span class="r-name">{{ item.name }}</span>
+          {% if item.restored %}<span class="r-meta" style="color:var(--ok);">✓ restored</span>{% endif %}
+        </div>
+        {% if item.description %}<div class="r-desc">{{ item.description }}{% if item.description|length >= 200 %}…{% endif %}</div>{% endif %}
+        <div class="r-meta">deleted {{ item.deleted_rel }} · reason: {{ item.reason }}</div>
+      </div>
+      {% if not item.restored %}
+      <form method="post" action="/app/system/forgotten/{{ item.id }}/restore" style="margin:0;">
+        <button type="submit" class="btn-secondary" style="font-size:11px;">Restore</button>
+      </form>
+      {% endif %}
+    </div>
+  {% endfor %}
+</section>
+{% endif %}
+{% endblock %}

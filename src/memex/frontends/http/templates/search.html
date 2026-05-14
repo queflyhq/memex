@@ -1,0 +1,239 @@
+{% extends "base.html" %}
+{% block title %}Search{% endblock %}
+{% block content %}
+<div style="display:flex; justify-content:space-between; align-items:flex-end; margin-bottom:6px;">
+  <div>
+    <h1 style="margin:0;">{% if query %}Recall results for "{{ query }}"{% elif stale_filter %}Stale memory{% else %}Browse memory{% endif %}</h1>
+    <p class="lede" style="margin:4px 0 0;">{% if query %}Hybrid recall — semantic + lexical + cross-encoder rerank.{% elif stale_filter %}Concepts memex hasn't confirmed in 90+ days. Verify each one is still true, or forget it.{% else %}Everything memex has stored. Click any item to see what it's connected to.{% endif %}</p>
+  </div>
+  {% if stale_count and not stale_filter %}
+    <a href="/app/search?stale=1" class="btn-secondary" style="color:#92400e; border-color:#fde68a; background:#fffbeb;" title="Concepts older than 90 days that haven't been re-confirmed">
+      ⏳ {{ stale_count }} stale to review
+    </a>
+  {% elif stale_filter %}
+    <a href="/app/search" class="btn-secondary">← all memory</a>
+  {% endif %}
+</div>
+
+<form class="ask-box" method="get" action="/app/search">
+  <input
+    type="text"
+    name="q"
+    value="{{ query or '' }}"
+    placeholder="Recall — e.g. 'last decision on rate limits', 'JWT validation logic'"
+    autofocus
+  >
+  <button class="btn-primary" type="submit">Recall</button>
+</form>
+
+{% if query %}
+<div style="display:flex; gap:8px; align-items:center; margin:-8px 0 14px;">
+  <span class="r-meta">Fast hybrid recall (BM25 + semantic). Slower precision rerank:</span>
+  {% if not precision %}
+    <a class="btn-secondary" href="/app/search?q={{ query }}{% if kind %}&kind={{ kind }}{% endif %}&precision=1" style="font-size:11px;">+ Cross-encoder rerank (~5s)</a>
+  {% else %}
+    <a class="btn-secondary" href="/app/search?q={{ query }}{% if kind %}&kind={{ kind }}{% endif %}" style="font-size:11px; background:var(--accent-bg);">✓ Reranked — back to fast</a>
+  {% endif %}
+</div>
+{% endif %}
+
+<div style="display:flex; gap:6px; flex-wrap:wrap; margin-bottom:18px;">
+  <a class="btn-secondary {% if not kind %}active{% endif %}" href="/app/search{% if query %}?q={{ query }}{% endif %}">Everything</a>
+  {% for k, label in [
+    ('decision', 'Decisions'),
+    ('fact', 'Facts'),
+    ('task', 'Tasks'),
+    ('action_constraint', 'AI rules'),
+    ('person', 'People'),
+    ('project', 'Projects'),
+    ('source', 'Code sources'),
+    ('pattern', 'Patterns'),
+    ('ephemeral', '⏳ Ephemeral'),
+  ] %}
+    <a class="btn-secondary {% if kind == k %}active{% endif %}" href="/app/search?kind={{ k }}{% if query %}&q={{ query }}{% endif %}">{{ label }}</a>
+  {% endfor %}
+</div>
+
+{% if error %}
+  <div class="error">{{ error }}</div>
+{% endif %}
+
+{% if action == 'create' %}
+<section class="card" style="background:var(--surface-2); border-color:var(--accent-bd); margin-bottom:18px;">
+  <h2>Remember — tell memex something</h2>
+  <form method="post" action="/app/search/create">
+    <label style="font-size:11.5px; color:var(--muted); display:block; margin-bottom:4px;">What kind?</label>
+    <select name="kind" style="padding:8px 12px; border:1px solid var(--border-2); border-radius:var(--radius); margin-bottom:10px; font-size:13px; font-family:inherit; width:200px;">
+      <option value="fact">Fact</option>
+      <option value="decision">Decision we made</option>
+      <option value="person">Person</option>
+      <option value="project">Project</option>
+    </select>
+    <label style="font-size:11.5px; color:var(--muted); display:block; margin-bottom:4px;">Short name</label>
+    <input name="name" required placeholder="e.g. 'Auth uses JWT not sessions'" style="padding:8px 12px; border:1px solid var(--border-2); border-radius:var(--radius); margin-bottom:10px; font-size:13px; font-family:inherit; width:100%; display:block;">
+    <label style="font-size:11.5px; color:var(--muted); display:block; margin-bottom:4px;">Details (optional)</label>
+    <textarea name="description" rows="3" placeholder="Anything more memex should know about this" style="padding:8px 12px; border:1px solid var(--border-2); border-radius:var(--radius); margin-bottom:10px; font-size:13px; font-family:inherit; width:100%; display:block; resize:vertical;"></textarea>
+
+    <details style="margin-bottom:10px;">
+      <summary style="font-size:11.5px; color:var(--muted); cursor:pointer;">⏳ Make this ephemeral (auto-forget after a window)</summary>
+      <div style="padding:8px 0;">
+        <label style="font-size:11.5px; color:var(--muted); display:flex; align-items:center; gap:6px;">
+          Forget after
+          <input name="ephemeral_hours" type="number" min="1" max="168" placeholder="e.g. 24" style="width:80px; padding:5px 8px; border:1px solid var(--border-2); border-radius:var(--radius); font-size:12px; font-family:inherit;">
+          hours
+        </label>
+        <p style="font-size:11px; color:var(--muted-2); margin:4px 0 0;">Useful for session-only context ("use 2-space indent today") or working hypotheses you want memex to forget if not reconfirmed.</p>
+      </div>
+    </details>
+
+    <button class="btn-primary" type="submit">Remember this</button>
+    <a class="btn-secondary" href="/app/search" style="margin-left:8px;">Cancel</a>
+  </form>
+</section>
+{% endif %}
+
+<div class="split">
+  <div
+    class="results-pane card"
+    style="padding:0;"
+    {% if query or kind %}
+      hx-get="/app/search/results?q={{ query|urlencode }}&kind={{ kind|urlencode }}{% if stale_filter %}&stale=1{% endif %}{% if precision %}&rerank=1{% endif %}"
+      hx-trigger="load"
+      hx-swap="innerHTML"
+    {% endif %}
+  >
+    {% if stale_filter %}
+      <div class="empty" style="padding:32px;">
+        <p style="color:var(--muted);">Loading stale concepts…</p>
+      </div>
+    {% elif query %}
+      <div class="empty" style="padding:32px;">
+        <p style="color:var(--muted);">Recalling "<em>{{ query }}</em>"…</p>
+        <p style="color:var(--muted-2); font-size:11.5px; margin-top:8px;">Hybrid (BM25 + vector + cross-encoder rerank). Usually 1–3 seconds.</p>
+      </div>
+    {% elif kind %}
+      <div class="empty" style="padding:32px;">
+        <p style="color:var(--muted);">Loading {{ kind | replace('_',' ') }}s…</p>
+      </div>
+    {% else %}
+      <div class="empty">
+        <p>Type a question above, or pick a category below to browse.</p>
+        <a class="cta" href="/app/search?action=create">Tell memex something</a>
+      </div>
+    {% endif %}
+  </div>
+
+  {% if selected %}
+  <aside class="detail-pane card">
+    <div class="d-header">
+      <span class="r-kind kind-{{ selected.kind }}">{{ selected.kind | replace('_',' ') }}</span>
+      <h3>{{ selected.name }}</h3>
+    </div>
+    <p id="desc-{{ selected.id }}" class="d-desc"
+       hx-get="/app/c/{{ selected.id }}/edit-description"
+       hx-target="this" hx-swap="outerHTML"
+       style="cursor:text;" title="click to edit">
+      {% if selected.description %}{{ selected.description }}{% else %}<em style="color:var(--muted-2)">click to add description</em>{% endif %}
+    </p>
+
+    {% if selected.grouped_connections %}
+    <div class="d-section">
+      <div class="d-label">Connections</div>
+      {% for ek, items in selected.grouped_connections.items() %}
+        <div style="margin-bottom:8px;">
+          <div style="font-size:10.5px; font-weight:600; color:var(--muted); text-transform:uppercase; letter-spacing:0.05em; margin-bottom:3px;">{{ ek | replace('_',' ') }}</div>
+          <ul style="list-style:none; padding:0; margin:0; display:flex; flex-direction:column; gap:2px;">
+            {% for it in items %}
+              <li style="font-size:12px;">
+                <a href="/app/search/{{ it.id }}" style="display:flex; gap:6px; align-items:baseline; color:var(--text); text-decoration:none;">
+                  <span class="r-kind kind-{{ it.kind }}" style="font-size:9px;">{{ it.kind | replace('_',' ') }}</span>
+                  <span>{{ it.name }}</span>
+                </a>
+              </li>
+            {% endfor %}
+          </ul>
+        </div>
+      {% endfor %}
+    </div>
+    {% endif %}
+
+    <div class="d-section">
+      <div class="d-label">Provenance</div>
+      <ul style="list-style:none; padding:0; margin:0; font-size:11.5px; line-height:1.7;">
+        {% if selected.source %}<li><strong>Source:</strong> {{ selected.source }}</li>{% endif %}
+        {% if selected.created_rel %}<li><strong>First seen:</strong> {{ selected.created_rel }}</li>{% endif %}
+        {% if selected.last_confirmed_rel %}<li><strong>Last confirmed:</strong> {{ selected.last_confirmed_rel }}</li>{% endif %}
+        {% if selected.confidence is not none %}<li><strong>Confidence:</strong> {{ (selected.confidence * 100) | int }}%</li>{% endif %}
+      </ul>
+    </div>
+
+    {% if selected.history %}
+    <div class="d-section">
+      <div class="d-label">History ({{ selected.history | length }} versions)</div>
+      <ul style="list-style:none; padding:0; margin:0; font-size:11.5px;">
+        {% for h in selected.history[:6] %}
+          <li style="padding:3px 0; border-bottom:1px solid var(--border);">
+            <strong>v{{ h.version }}</strong>
+            <span class="r-meta">{{ h.changed_rel }} · {{ h.description_len }} char description</span>
+          </li>
+        {% endfor %}
+      </ul>
+    </div>
+    {% endif %}
+
+    {% if selected.activity %}
+    <div class="d-section">
+      <div class="d-label">Activity</div>
+      <ul style="list-style:none; padding:0; margin:0; font-size:11.5px;">
+        {% for a in selected.activity[:8] %}
+          <li style="padding:2px 0;"><span class="r-meta" style="display:inline-block; width:60px;">{{ a.rel_time }}</span> {{ a.kind | replace('_',' ') }}</li>
+        {% endfor %}
+      </ul>
+    </div>
+    {% endif %}
+
+    {% if selected.code_mentions %}
+    <div class="d-section">
+      <div class="d-label">Code that mentions this</div>
+      <ul style="list-style:none; padding:0; margin:0; font-size:11.5px;">
+        {% for s in selected.code_mentions %}
+          <li style="padding:3px 0;">
+            <a href="/app/code/symbol/{{ s.id }}" style="color:var(--text); text-decoration:none;">
+              <strong>{{ s.name }}</strong>
+              <span class="r-meta">{{ s.symbol_kind or 'sym' }}{% if s.file_path %} · {{ s.file_path }}{% endif %}</span>
+            </a>
+          </li>
+        {% endfor %}
+      </ul>
+    </div>
+    {% endif %}
+
+    <div class="d-section" style="border-top:1px solid var(--border); padding-top:12px; margin-top:14px;">
+      <form method="post" action="/app/search/{{ selected.id }}/delete" onsubmit="return confirm('Delete this memory? AI won\'t recall it anymore.');">
+        <button class="btn-secondary" type="submit" style="color:#b91c1c; border-color:#fecaca;">
+          Forget this
+        </button>
+      </form>
+    </div>
+  </aside>
+  {% endif %}
+</div>
+
+<style>
+  .ask-box { display:grid; grid-template-columns:1fr max-content; gap:8px; margin-bottom:14px; }
+  .ask-box input { padding:12px 16px; font-size:13.5px; border:1px solid var(--border-2); border-radius:var(--radius-lg); background:var(--surface); color:var(--text); font-family:inherit; }
+  .ask-box input:focus { outline:2px solid var(--accent); border-color:transparent; }
+  .ask-box .btn-primary { padding:12px 22px; font-size:13px; border-radius:var(--radius-lg); }
+  .btn-secondary.active { background:color-mix(in oklab, var(--accent) 12%, transparent); color:var(--accent); border-color:color-mix(in oklab, var(--accent) 30%, transparent); }
+  .split { display:grid; grid-template-columns:1fr 320px; gap:14px; align-items:start; }
+  .result.selected { background:color-mix(in oklab, var(--accent) 8%, transparent); }
+  .detail-pane { padding:16px; }
+  .d-header { display:flex; flex-direction:column; gap:6px; margin-bottom:12px; }
+  .d-header h3 { font-family:"Plus Jakarta Sans", sans-serif; font-size:15px; font-weight:700; margin:0; }
+  .d-desc { font-size:12.5px; line-height:1.5; margin:0 0 14px; }
+  .d-section { margin-top:12px; }
+  .d-label { font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:0.06em; color:var(--muted); margin-bottom:6px; }
+  .connections { list-style:none; padding:0; margin:0; display:flex; flex-direction:column; gap:4px; font-size:12px; }
+  .connections strong { color:var(--accent); }
+</style>
+{% endblock %}

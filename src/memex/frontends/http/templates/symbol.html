@@ -1,0 +1,119 @@
+{% extends "base.html" %}
+{% block title %}{{ symbol.name }}{% endblock %}
+{% block content %}
+
+<div style="display:flex; align-items:center; gap:8px; margin-bottom:10px;">
+  <a class="btn-secondary" href="/app/code/{{ symbol.source_id }}">← {{ symbol.source_name }}</a>
+  <span class="r-meta">/</span>
+  {% if symbol.file_id %}<a class="btn-secondary" href="/app/code/file/{{ symbol.file_id }}">{{ symbol.file_path }}</a>{% endif %}
+</div>
+
+<div style="display:flex; gap:8px; align-items:center; margin-bottom:6px;">
+  <span class="r-kind kind-symbol">{{ symbol.symbol_kind or 'symbol' }}</span>
+  <h1 style="margin:0; font-size:18px;">{{ symbol.name }}</h1>
+</div>
+{% if symbol.signature %}
+<p style="font-family:'JetBrains Mono', Consolas, monospace; font-size:11.5px; color:var(--muted); margin:4px 0 14px;">{{ symbol.signature }}</p>
+{% endif %}
+
+{% if symbol.docstring %}
+<section class="card">
+  <h2>Docstring</h2>
+  <p style="white-space:pre-wrap; font-size:13px; line-height:1.55;">{{ symbol.docstring }}</p>
+</section>
+{% endif %}
+
+<section class="card" style="padding:0;">
+  <div style="padding:10px 14px; border-bottom:1px solid var(--border); display:flex; justify-content:space-between; align-items:center;">
+    <h2 style="margin:0;">Body</h2>
+    {% if symbol.start_line and symbol.end_line %}
+      <span class="r-meta">lines {{ symbol.start_line }}–{{ symbol.end_line }}</span>
+    {% endif %}
+  </div>
+  {% if symbol.body %}
+    <pre class="line-numbers" style="margin:0; max-height:60vh; overflow:auto;"><code class="language-{{ symbol.language or 'plaintext' }}">{{ symbol.body }}</code></pre>
+  {% else %}
+    <div class="empty">No body stored. Re-index this source to populate.</div>
+  {% endif %}
+</section>
+
+<div class="split">
+  <section class="card">
+    <h2>Called by</h2>
+    {% if not callers %}
+      <p class="r-meta">Nothing in the indexed corpus calls this.{% if symbol.is_public %} It may be a public entry point.{% endif %}</p>
+    {% else %}
+      <ul style="list-style:none; padding:0; margin:0;">
+        {% for c in callers %}
+          <li style="padding:5px 0; border-bottom:1px solid var(--border); font-size:12.5px;">
+            <a href="/app/code/symbol/{{ c.id }}">{{ c.name }}</a>
+            <span class="r-meta">{{ c.file_path }}</span>
+          </li>
+        {% endfor %}
+      </ul>
+    {% endif %}
+  </section>
+
+  <section class="card">
+    <h2>Calls</h2>
+    {% if not callees %}
+      <p class="r-meta">This symbol doesn't call anything else (or its calls aren't indexed).</p>
+    {% else %}
+      <ul style="list-style:none; padding:0; margin:0;">
+        {% for c in callees %}
+          <li style="padding:5px 0; border-bottom:1px solid var(--border); font-size:12.5px;">
+            <a href="/app/code/symbol/{{ c.id }}">{{ c.name }}</a>
+            {% if c.file_path %}<span class="r-meta">{{ c.file_path }}</span>{% endif %}
+          </li>
+        {% endfor %}
+      </ul>
+    {% endif %}
+  </section>
+</div>
+
+{% if siblings %}
+<section class="card">
+  <h2>Same symbol in other repos</h2>
+  <p class="r-meta">Cross-repo `same_as` links — this symbol exists in {{ siblings | length }} other source{{ '' if siblings|length == 1 else 's' }}.</p>
+  <ul style="list-style:none; padding:0; margin:0;">
+    {% for s in siblings %}
+      <li style="padding:5px 0; border-bottom:1px solid var(--border); font-size:12.5px;">
+        <a href="/app/code/symbol/{{ s.id }}">{{ s.name }}</a>
+        <span class="r-meta">{{ s.source_name }}</span>
+      </li>
+    {% endfor %}
+  </ul>
+</section>
+{% endif %}
+
+{% if touched_by %}
+<section class="card">
+  <h2>Touched by</h2>
+  <p class="r-meta">Tasks / changes that edited this symbol.</p>
+  <ul style="list-style:none; padding:0; margin:0;">
+    {% for t in touched_by %}
+      <li style="padding:5px 0; border-bottom:1px solid var(--border); font-size:12.5px;">
+        <a href="/app/search/{{ t.id }}">{{ t.name }}</a>
+        <span class="r-meta">{{ t.kind }}</span>
+      </li>
+    {% endfor %}
+  </ul>
+</section>
+{% endif %}
+
+<link rel="stylesheet" href="/app/static/prism.min.css">
+<script src="/app/static/prism.min.js" defer></script>
+<script src="/app/static/prism-langs.min.js" defer></script>
+
+<style>
+  .split { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
+  pre[class*="language-"] {
+    font-family:"JetBrains Mono", Consolas, "Courier New", monospace;
+    font-size:12px;
+    padding:14px 16px;
+    background:#1f2328 !important;
+    border-radius:0;
+  }
+  pre code { font-size:12px; }
+</style>
+{% endblock %}
